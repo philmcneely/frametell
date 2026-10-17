@@ -1,3 +1,12 @@
 {
-   "signedContributors": []
+  "signedContributors": [
+    {
+      "name": "liu2kaibin",
+      "id": 31823280,
+      "comment_id": 6234569296,
+      "created_at": "2026-10-17T13:40:49Z",
+      "repoId": 1413034949,
+      "pullRequestNo": 3
+    }
+  ]
 }
