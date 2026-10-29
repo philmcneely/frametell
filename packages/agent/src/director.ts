@@ -1312,7 +1312,7 @@ export class Director {
     }));
     // a style drawn in pictures: its pages are written from the storyboard, no model draws them
     if (this.pictureStyle()?.led) {
-      for (const p of todo) this.ledPage(sb, p, tl);
+      for (let i = 0; i < todo.length; i += 4) await Promise.all(todo.slice(i, i + 4).map((p) => this.ledPage(sb, p, tl)));
       await this.commit(this.say('按分镜画好各页', 'Pages drawn from the storyboard'));
       return this.pagesDone(only, o);
     }
@@ -1465,14 +1465,17 @@ export class Director {
   }
 
   /** a page of a style drawn in pictures, written from its scenes' cues and focus (pictures.ts ledPage) */
-  private ledPage(sb: Storyboard, t: PageTiming, tl: { pages: PageTiming[] }) {
+  private async ledPage(sb: Storyboard, t: PageTiming, tl: { pages: PageTiming[] }) {
     const plan = picturePlan(sb.look, this.pictureStyle(), this.own()), drawn = readPictures(this.o.dir).items;
     const scenes = picturesOn(plan, drawn, t.id).filter((p) => p.kind === 'scene');
     // a page with no scene of its own holds the last one before it
     const earlier = tl.pages.slice(0, tl.pages.findIndex((p) => p.id === t.id)).reverse();
     const before = earlier.map((p) => picturesOn(plan, drawn, p.id).filter((x) => x.kind === 'scene').pop()).find(Boolean);
     this.project.write(`pages/${t.id}.js`, ledPage(t.id, scenes, t.cues.map((c) => c.at), t.end - t.start, before));
-    this.setPage(t.id, { status: 'ok', rounds: 0, issues: [], failures: this.state.pages[t.id]?.failures });
+    // its film-strip thumbnail, as a drawn page gets one after its check: the last scene, drawn in whole
+    let thumb: string | undefined;
+    try { thumb = await this.project.snap(`${t.id}-thumb`, [Math.max(t.start + 0.5, t.end - 0.4)], [t.id], 480, false); } catch (e) { if (stopped(e)) throw e; }
+    this.setPage(t.id, { status: 'ok', rounds: 0, issues: [], failures: this.state.pages[t.id]?.failures }, { thumb });
   }
 
   private async page(sb: Storyboard, t: PageTiming, lane?: Lane) {
