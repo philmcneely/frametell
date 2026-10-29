@@ -45,7 +45,10 @@ export function piRuntime(models: MutableModels, model: Model<Api>, opts: { thin
     model: { provider: model.provider, id: model.id },
     async open(o: SessionOptions, resume?: string): Promise<AgentSession> {
       // which session a request comes from, for a gateway that meters each one (it decides nothing by it)
-      const named = (m: Model<Api>): Model<Api> => ({ ...m, headers: { ...m.headers, 'x-frametell-session': o.name } });
+      // and the turn's effort at the top of the request (output_config), not in a system message mid-conversation: a
+      // relay that doesn't take that one ran every "low" turn at the "high" pi-ai sets at the top beside it (2026-10-29:
+      // pages thought 4–8× as much, a one-minute film cost ~3× as much)
+      const named = (m: Model<Api>): Model<Api> => ({ ...m, ...(m.compat && 'supportsMidConvoEffort' in m.compat ? { compat: { ...m.compat, supportsMidConvoEffort: false } } : {}), headers: { ...m.headers, 'x-frametell-session': o.name } });
       const transcript = resume && fs.existsSync(resume) ? (JSON.parse(fs.readFileSync(resume, 'utf8')) as AgentMessage[]) : [];
       let answers: Answer[] = [];
       const tools = [...(o.agentTools ?? (o.tools === 'none' ? [] : fileTools(o.cwd))), ...answerTools(o.answers ?? [], (a) => answers.push(a))];

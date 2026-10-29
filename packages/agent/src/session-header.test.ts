@@ -55,3 +55,22 @@ test('a session\'s transcript is saved after every turn, so a process lost mid-e
     await sent;
   } finally { server.closeAllConnections(); server.close(); fs.rmSync(cwd, { recursive: true, force: true }); }
 });
+
+test("a turn's effort goes at the top of a Claude request, not in a system message mid-conversation", async () => {
+  const bodies: any[] = [];
+  const server = http.createServer((req, res) => { let b = ''; req.on('data', (d) => (b += d)); req.on('end', () => { bodies.push(JSON.parse(b)); res.writeHead(500).end('{"error":"test"}'); }); });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-effort-'));
+  try {
+    const catalog = await createCatalog({ keys: [{ providerId: 'anthropic', apiKey: 'k' }], baseUrls: { anthropic: `http://127.0.0.1:${(server.address() as AddressInfo).port}` } });
+    const model = catalog.get('anthropic', 'claude-opus-5-5');
+    assert.ok(model);
+    const session = await piRuntime(catalog.models, model).open({ name: 'page-p01', system: 's', cwd, maxTurns: 1 });
+    await session.send({ text: 'hi', thinking: 'low' });
+    assert.ok(bodies.length >= 1);
+    for (const b of bodies) {
+      assert.deepEqual(b.output_config, { effort: 'low' });
+      assert.ok(!b.messages.some((m: any) => m.role === 'system'), JSON.stringify(b.messages.map((m: any) => m.role)));
+    }
+  } finally { server.close(); fs.rmSync(cwd, { recursive: true, force: true }); }
+});
