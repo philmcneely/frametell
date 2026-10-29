@@ -73,7 +73,7 @@ export function fileTools(root: string, opts: { timeoutMs?: number } = {}): Agen
   };
   const write: AgentTool<typeof WriteP> = {
     name: 'write', label: 'Write',
-    description: 'Create a new file in the project (or replace a small one). To change a page that already exists (pages/*.js), use edit: rewriting a whole page is refused.',
+    description: 'Create a new file in the project (or replace a small one). To change a page (pages/*.js) or a component (extras/kit/*.js) that already exists, use edit: rewriting it whole is refused.',
     parameters: WriteP,
     executionMode: 'sequential',
     execute: async (_id, p) => {

@@ -198,3 +198,88 @@ test('a change at the first page that reaches a component is made in it, checked
   await d.kitChange('镜头再推近一点');
   assert.equal(f.checked.length, n);
 });
+
+/** the page runtime's sessions, each send first running `turns(name, text)` model turns (as many as it may: the
+ *  session's maxTurns and the send's own cap) and the tool calls `tools(name)` gives, as a model would */
+function instrument(f: ReturnType<typeof film>, o: { turns?: (name: string, text: string) => number; tools?: (name: string) => { name: string; input: { path?: string; command?: string } }[] }) {
+  const sent: { name: string; text: string; maxTurns?: number }[] = [];
+  const runtime = (f.d as unknown as { o: { pages: { runtime: AgentRuntime } } }).o.pages.runtime;
+  const open = runtime.open.bind(runtime);
+  runtime.open = async (s, resume) => {
+    const x = await open(s, resume);
+    return { ...x, send: async (m: { text: string; maxTurns?: number }) => {
+      sent.push({ name: s.name, text: m.text, maxTurns: m.maxTurns });
+      for (const [i, t] of (o.tools?.(s.name) ?? []).entries()) s.onEvent?.({ type: 'tool_start', id: `t${i}`, name: t.name, summary: JSON.stringify(t.input), input: t.input });
+      const n = Math.min(o.turns?.(s.name, m.text) ?? 0, s.maxTurns, m.maxTurns ?? Infinity);
+      for (let i = 0; i < n; i++) s.onEvent?.({ type: 'turn', usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } });
+      return x.send(m as never);
+    } };
+  };
+  return sent;
+}
+
+test('a kit session is told how a component is written, so it never needs the engine\'s source', async () => {
+  const f = film();
+  await f.d.kit();
+  assert.match(f.systems['kit-globe'], /# Writing a component[\s\S]*don't read engine\/ to find more[\s\S]*What a call returns/);
+  assert.doesNotMatch(f.systems['page-p01'] ?? '', /# Writing a component/);
+});
+
+test('a session reading the engine\'s source is reported once, and the call\'s command goes no further than the director', async () => {
+  const f = film();
+  instrument(f, { tools: (name) => (name.startsWith('kit-') ? [
+    { name: 'read', input: { path: 'extras/kit/globe.js' } },
+    { name: 'bash', input: { command: 'node engine/tools/lint.mjs --only kit' } },
+    { name: 'bash', input: { command: 'grep -n "Builder.prototype" engine/runtime/*.js' } },
+    { name: 'read', input: { path: 'engine/styles/midcentury/kit.js' } },
+  ] : []) });
+  await f.d.kit();
+  const anomalies = f.events.filter((e) => e.type === 'anomaly');
+  assert.deepEqual(anomalies, [{ type: 'anomaly', kind: 'source-reading', session: 'kit-globe', detail: 'grep -n "Builder.prototype" engine/runtime/*.js' }]);
+  const calls = f.events.flatMap((e) => (e.type === 'agent' && e.event.type === 'tool_start' ? [e.event] : []));
+  assert.ok(calls.length >= 4);
+  assert.ok(calls.every((c) => !('input' in c)), 'logged without its input');
+});
+
+test('a crash raised in one component goes to its session alone; the others are not woken', async () => {
+  const kettle = { name: 'kettle', what: 'the red kettle', pages: ids.slice(1, 5) };
+  const f = film({ kit: [...KIT_PLAN, kettle] });
+  const sent = instrument(f, {});
+  let round = 0;
+  Object.assign(f.d, {
+    checkKit: async (items: { name: string }[]) => {
+      round++;
+      // the kit put together: globe on lines 1–5, flag on 7–11 (B.flag on 10)
+      const issues = round === 1 ? [{ page: 'kit', t: 0, t1: 0, local: 0, kind: 'runtime', level: 'error', msg: 'runtime error (build): label.x is undefined — at extras/film-kit.js:10:7, engine/runtime/engine.js:130:9' }] : [];
+      return { page: { start: 0, end: 7.8, cues: items.map((_, i) => ({ abs: i * 2.6 })) }, times: [2.3, 4.9, 7.5], check: { issues, sheet: path.join(f.dir, 'kit.jpg') } };
+    },
+  });
+  await f.d.kit();
+  assert.equal(fs.readFileSync(path.join(f.dir, 'extras/film-kit.js'), 'utf8').split('\n')[9].trim().slice(0, 7), 'B.flag ');
+  const fixes = sent.filter((x) => /^Check round/.test(x.text));
+  assert.deepEqual(fixes.map((x) => x.name), ['kit-flag'], 'globe and kettle share the other session, which is not woken');
+  assert.match(fixes[0].text, /raised in your extras\/kit\/flag\.js[\s\S]*at extras\/kit\/flag\.js:4:7/);
+  assert.doesNotMatch(fixes[0].text, /may not be yours/);
+  assert.deepEqual(f.d.state.kit, { status: 'done', components: ['globe', 'flag', 'kettle'] });
+});
+
+test('a kit session is held to its turns over its whole life: spent, it is sent nothing more, said once', async () => {
+  const f = film({ failFlag: true });
+  const sent = instrument(f, { turns: (name) => (name.startsWith('kit-') ? 20 : 0) });
+  await f.d.kit();
+  // one session holds both: globe's exchange takes its 16 (a send's cap), flag's the 8 left of 24
+  const kit = sent.filter((x) => x.name === 'kit-globe');
+  assert.deepEqual(kit.map((x) => x.maxTurns), [24, 8], 'no fix round reaches the model once the budget is spent');
+  assert.deepEqual(f.events.filter((e) => e.type === 'anomaly'), [{ type: 'anomaly', kind: 'turn-budget', session: 'kit-globe', detail: '24 turns of 24' }]);
+  assert.deepEqual(f.d.state.kit, { status: 'done', components: ['globe'] });   // the flag kept as it failed: out
+});
+
+test('a lane may take a page\'s worth of turns more for each page it draws', async () => {
+  const f = film({ kit: [] });
+  const sent = instrument(f, { turns: (name) => (name.startsWith('page-') ? 60 : 0) });
+  await f.d.pages();
+  const lane = sent.filter((x) => x.name === 'page-p01');
+  assert.deepEqual(lane.map((x) => x.maxTurns), [40, 40, 40, 40], 'each page brings 40 more, each draft takes them all');
+  assert.deepEqual(f.events.filter((e) => e.type === 'anomaly' && e.session === 'page-p01').length, 1);
+  assert.ok(Object.values(f.d.state.pages).every((p) => p.status === 'ok'));
+});

@@ -53,8 +53,8 @@ export function codexRuntime(o: CodexRuntimeOptions): AgentRuntime {
               if (e.type === 'item.started' && (e.item.type === 'command_execution' || e.item.type === 'file_change')) {
                 turns++;
                 const summary = e.item.type === 'command_execution' ? e.item.command : e.item.changes.map((c) => `${c.kind} ${c.path}`).join(', ');
-                s.onEvent?.({ type: 'tool_start', id: e.item.id, name: e.item.type === 'command_execution' ? 'bash' : 'edit', summary: summary.slice(0, 160) });
-                if (turns >= s.maxTurns) { stop = 'max_turns'; abort.abort(); }
+                s.onEvent?.({ type: 'tool_start', id: e.item.id, name: e.item.type === 'command_execution' ? 'bash' : 'edit', summary: summary.slice(0, 160), ...(e.item.type === 'command_execution' ? { input: { command: e.item.command } } : {}) });
+                if (turns >= Math.min(s.maxTurns, input.maxTurns ?? s.maxTurns)) { stop = 'max_turns'; abort.abort(); }
               } else if (e.type === 'item.completed') {
                 if (e.item.type === 'agent_message' && e.item.text.trim()) { last = e.item.text.trim(); s.onEvent?.({ type: 'text', text: last }); }
                 else if (e.item.type === 'reasoning' && e.item.text) s.onEvent?.({ type: 'thinking', text: e.item.text });
