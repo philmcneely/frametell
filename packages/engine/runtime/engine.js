@@ -11,7 +11,9 @@
   addEventListener('error', (ev) => { const m = /pages(-portrait)?\/(p\w+)\.js/.exec(ev.filename || ''); if (m) loadErrors[m[2]] = Object.assign(new Error(ev.message), { stack: `${ev.message}\n    at pages/${m[2]}.js:${ev.lineno}:${ev.colno}` }); });
   function fail(p, phase, e, t) {
     if (!errors.some((x) => x.page === p.pg.id)) {
-      const at = String(e?.stack || '').split('\n').map((l) => /pages(-portrait)?\/p\w+\.js:\d+:\d+|engine\/(runtime|lib)\/[\w.-]+:\d+:\d+|runtime\/[\w.-]+:\d+:\d+/.exec(l)?.[0]).filter(Boolean).slice(0, 4);
+      // the film's own code too (its components in extras/, a kit's check page): a kit's error is sent to the session
+      // whose component it is raised in, found by these frames
+      const at = String(e?.stack || '').split('\n').map((l) => /pages(-portrait)?\/\w+\.js:\d+:\d+|extras\/[\w./-]+\.js:\d+:\d+|engine\/(runtime|lib)\/[\w.-]+:\d+:\d+|runtime\/[\w.-]+:\d+:\d+/.exec(l)?.[0]).filter(Boolean).slice(0, 4);
       errors.push({ page: p.pg.id, phase, t: t == null ? null : +t.toFixed(2), local: t == null ? null : +(t - p.pg.start).toFixed(2), message: String(e?.message || e), at });
       console.error(`page ${p.pg.id} ${phase}${t == null ? '' : ` @${t.toFixed(2)}s`}: ${e?.message || e}`);
     }
