@@ -75,10 +75,15 @@ export function piRuntime(models: MutableModels, model: Model<Api>, opts: { thin
           o.onEvent?.({ type: 'progress', what: ev.type === 'thinking_delta' ? 'thinking' : 'text', chars: String(block?.thinking ?? block?.text ?? '').length });
         }
       };
+      const save = () => { fs.mkdirSync(path.dirname(ref), { recursive: true }); fs.writeFileSync(ref, JSON.stringify(agent.state.messages)); };
       agent.subscribe((e) => {
         if (e.type === 'message_update') { progress((e as any).assistantMessageEvent); return; }
         if (e.type === 'turn_end') {
           turns++;
+          // the transcript is saved after every turn, not only when the exchange ends: a process lost mid-exchange (a
+          // hosted box gone, 2026-10-29: a 36-turn storyboard begun again from nothing) leaves it to carry on from. At a
+          // turn's end it is whole (the reply and every tool result it asked for)
+          save();
           const u = (e.message as any)?.usage;
           if (u) { usage = addUsage(usage, u); o.onEvent?.({ type: 'turn', usage: { input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite } }); }
           if (turns >= o.maxTurns) { stop = 'max_turns'; agent.abort(); }
@@ -98,7 +103,6 @@ export function piRuntime(models: MutableModels, model: Model<Api>, opts: { thin
       // between two sends (lint, screenshots) or before the first is checked on each send instead: missed, it let the
       // run go on for minutes after "Pause", and Continue was ignored meanwhile
       const onAbort = () => { stop = 'aborted'; agent.abort(); };
-      const save = () => { fs.mkdirSync(path.dirname(ref), { recursive: true }); fs.writeFileSync(ref, JSON.stringify(agent.state.messages)); };
       return {
         ref,
         async send(input: StageInput): Promise<TurnResult> {
