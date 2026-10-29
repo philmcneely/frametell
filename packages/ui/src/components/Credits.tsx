@@ -26,7 +26,7 @@ export function useCredits() {
 export function useFilmCredits(project: string, run: RunView) {
   const spent = hosted?.credits?.spent;
   const working = isWorking(run);
-  const [v, setV] = useState<{ spent: number; quote?: number; goAhead?: number; cost?: number } | null>(null);
+  const [v, setV] = useState<{ spent: number; goAhead?: number; cost?: number } | null>(null);
   useEffect(() => {
     if (!spent) return;
     let alive = true;
@@ -49,18 +49,20 @@ export function useSpent(project: string, run: RunView) {
 }
 
 /** on a hosted service, what this film has spent; its admins also see what it cost the service. Until the film is first
- *  ready it says what the whole film is quoted at instead: a count running up through the storyboard (most of a film's
- *  thinking) read as a film costing far more than it does */
+ *  ready it says nothing of credits: a count running up through the storyboard read as a film costing far more than it
+ *  does, and a quote reads as a promise of what a film costs, which no one can know before it is made (2026-10-29) */
 export function FilmCredits({ project, run }: { project: string; run: RunView }) {
   const { t, locale } = useT();
   const v = useFilmCredits(project, run);
   if (!v) return null;
+  const making = !finished(run);
+  if (making && v.cost == null) return null;
   const fmt = (n: number) => n.toLocaleString(locale === 'zh' ? 'zh-CN' : 'en-US');
-  const quoted = !finished(run) && v.quote != null;
+  const cost = v.cost != null ? money({ amount: v.cost, currency: 'USD' }) : '';
   return (
-    <span className="shrink-0 text-[12.5px] text-ink-3 tabular" title={t(quoted ? 'common.filmQuoteTitle' : 'common.filmSpentTitle')}>
-      {quoted ? t('common.filmQuote', { n: fmt(v.quote!) }) : t('common.filmSpent', { n: fmt(v.spent) })}
-      {v.cost != null && <span title={t('common.filmCostTitle')}>{` · ${money({ amount: v.cost, currency: 'USD' })}`}</span>}
+    <span className="shrink-0 text-[12.5px] text-ink-3 tabular" title={t(making ? 'common.filmCostTitle' : 'common.filmSpentTitle')}>
+      {making ? cost : t('common.filmSpent', { n: fmt(v.spent) })}
+      {!making && cost && <span title={t('common.filmCostTitle')}>{` · ${cost}`}</span>}
     </span>
   );
 }

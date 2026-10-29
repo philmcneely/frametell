@@ -14,8 +14,6 @@ export default {
   creditsTitle: '可用积分',
   filmSpent: '本次消耗 {n} 积分',
   filmSpentTitle: '这部片子到现在实际用掉的积分',
-  filmQuote: '这部片子约 {n} 积分',
-  filmQuoteTitle: '整部片子的预估；做好后显示实际用掉的积分',
   filmCostTitle: '按官方 API 价格算的成本（仅管理员可见）',
   short: {
     title: '积分不够了',

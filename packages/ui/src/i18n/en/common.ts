@@ -15,8 +15,6 @@ const en: typeof zh = {
   creditsTitle: 'Credits you can spend',
   filmSpent: 'Spent {n} credits',
   filmSpentTitle: 'What this film has used so far',
-  filmQuote: 'About {n} credits for this film',
-  filmQuoteTitle: 'What the whole film is quoted at; what it actually uses is shown once it is ready',
   filmCostTitle: 'What this film cost at official API prices (admins only)',
   short: {
     title: 'Not enough credits',
