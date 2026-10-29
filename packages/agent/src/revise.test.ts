@@ -78,3 +78,24 @@ test('a page the change adds is drawn from nothing', async () => {
   assert.match(sent[0], /This page is new[\s\S]*在开头加一个标题/);
   assert.doesNotMatch(sent[0], /is already written/);
 });
+
+test('a change to a film drawn in pictures is planned even when it names a page, and a picture drawn again is the change', async () => {
+  // seen: four asks to fix a face on page 2 went straight to its page, written by rule from the scenes: nothing changed
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-revise-led-'));
+  fs.writeFileSync(path.join(dir, 'storyboard.json'), JSON.stringify({ title: 'T', summary: 'S', pages: [{ id: 'p01', section: 'a', say: '…', beats: [] }, { id: 'p02', section: 'b', say: '…', beats: [] }] }));
+  fs.writeFileSync(path.join(dir, 'script.js'), 'const META = {};\n');
+  const events: { type: string }[] = [], planned: string[] = [];
+  const d = new Director({ dir, style: 'sales-training', brief: { durationSec: 60, lang: 'en', replyLang: 'en' }, runtime: fake([], () => ''), emit: (e) => events.push(e) });
+  Object.assign(d.project, { timeline: async () => ({ duration: 10, pages: [] }), commit: async () => undefined });
+  Object.assign(d, {
+    pictureStyle: () => ({ led: true }),
+    planRevision: async (request: string) => { planned.push(request); return { plan: [] }; },
+    changePictures: async () => 1,
+  });
+  const inner = d as unknown as { state: { exported?: boolean; stage?: string } };
+  inner.state.exported = true;
+  await d.revise('Please change the eyes on the lady in this picture (page 2)');
+  assert.deepEqual(planned, ['Please change the eyes on the lady in this picture (page 2)']);
+  assert.equal(inner.state.exported, false);
+  assert.ok(events.some((e) => e.type === 'ready'));
+});

@@ -1055,8 +1055,8 @@ export class Director {
    * those the planner named in its plan to draw again (`"pictures": [{ "id", "note" }]`, when the user's words are about
    * a picture itself: its look, a box around it, its pose). Code can't change a picture; drawing it again can.
    */
-  private async changePictures(before: unknown) {
-    if (!this.pictureStyle()) return;
+  private async changePictures(before: unknown): Promise<number> {
+    if (!this.pictureStyle()) return 0;
     const asked = (look: unknown) => JSON.stringify(look && typeof look === 'object' ? (look as Record<string, unknown>).pictures ?? null : null);
     let named: { id: string; note?: string }[] = [];
     try {
@@ -1064,13 +1064,15 @@ export class Director {
       if (Array.isArray(raw)) named = raw.filter((x) => x && typeof x.id === 'string').map((x) => ({ id: x.id, note: typeof x.note === 'string' ? x.note : undefined }));
     } catch { /* no plan file, or none named */ }
     const added = asked(this.project.storyboard().look) !== asked(before);
-    if (!added && !named.length) return;
+    if (!added && !named.length) return 0;
     this.emit({ type: 'note', text: this.say('先画这次要用的配图', 'Drawing the pictures this change needs first') });
     if (added) await this.pictures();
     const plan = this.planned();
-    for (const n of named) { const p = plan.find((x) => x.id === n.id); if (p) await this.drawAgain(p, plan, n.note); }
+    let redrawn = 0;
+    for (const n of named) { const p = plan.find((x) => x.id === n.id); if (p && await this.drawAgain(p, plan, n.note) !== undefined) redrawn++; }
     this.freezePictures();
     await this.commit(this.say('照用户的意见重画配图', 'Pictures drawn again as the user asked'));
+    return redrawn;
   }
 
   /** Server-owned META fields, rewritten in place in script.js (the planner must not change them). */
@@ -1726,8 +1728,11 @@ export class Director {
     // Anything that may touch the words (narration, subtitles, timing), or names no page, is planned first
     // (not 讲 or 说: 「讲 ABC 的那部分」 points at a picture, and sent a centering fix through a minute of planning)
     // the user's own words, in either language
-    const words = /口播|文案|台词|配音|字幕|旁白|这句|句子|念|时长|节奏|\b(narrat\w*|script|voice\w*|subtitles?|captions?|wording|sentences?|timing|pac(e|ing))\b/i;
-    const direct = named.length > 0 && named.length <= 2 && !words.test(request.replace(/<references>[\s\S]*?<\/references>/, ''));
+    const words = /口播|文案|台词|配音|字幕|旁白|这句|句子|念|读音|发音|读成|时长|节奏|\b(narrat\w*|script|voice\w*|subtitles?|captions?|wording|sentences?|pronounc\w*|timing|pac(e|ing))\b/i;
+    // a style drawn in pictures has no page agent: its pages are written from the scenes, so what shows changes only
+    // when a picture is drawn again or the narration changes, which the planner decides (seen: four asks to fix a
+    // face went straight to its page and changed nothing)
+    const direct = !this.pictureStyle()?.led && named.length > 0 && named.length <= 2 && !words.test(request.replace(/<references>[\s\S]*?<\/references>/, ''));
     const storyboard = this.project.read('storyboard.json');
     let plan: RevisionPlan | undefined = direct ? named.map((id) => ({ id, note: request })) : undefined;
     if (!plan) {
@@ -1737,7 +1742,8 @@ export class Director {
       plan = got.plan;
     }
     // pictures the change added, changed or names to draw again are drawn before the pages that place them
-    if (plan.length && !direct) await this.changePictures(sb.look);   // (a direct change has no plan file of its own)
+    // (a direct change has no plan file of its own; a plan with no pages may still name a picture to draw again)
+    const redrawn = direct ? 0 : await this.changePictures(sb.look);
     const tPlan = Date.now();
     // a change to the narration can leave a page's code as it is (its timing follows the script): only a change to the
     // picture must show in the page's code
@@ -1751,6 +1757,11 @@ export class Director {
       // setting such as the style or the voice's speed, which a change can't make). A change to the words alone (the
       // narration, how a word is read) is voiced again and checked; anything else leaves the film as it was
       const touched = this.wordsChanged || this.project.read('storyboard.json') !== storyboard;
+      if (!touched && redrawn) {
+        // a picture drawn again, its pages already pointed at the new file: nothing else to draw
+        this.state.exported = false; this.state.change = undefined; this.save();
+        return this.ready();
+      }
       if (!touched) {
         this.state.change = undefined;
         return this.ready();
@@ -1889,7 +1900,8 @@ ${this.project.read('script.js')}
     if (!style) return '';
     const drawn = this.planned().filter((p) => readPictures(this.o.dir).items.some((x) => x.id === p.id));
     return `\nThis film may use generated pictures, listed in storyboard.json's \`look.pictures\` (read storyboard.json to change it). When the change asks for what code draws poorly (people who look like people, a character or creature, the person's own mascot or product, a real thing, a place), add or change pictures there and say \`picture <id>\` in the note of each page that shows one: they are drawn before the pages. Leave every picture that stays exactly as it is (same id and words), or it is drawn and paid for again.${drawn.length ? `
-The pictures drawn so far: ${drawn.map((p) => `${p.id} (${p.what})`).join('; ')}. A page's code can't change what is inside a picture. When the user's words are about a picture itself (how a person or thing in it looks, a box, border, rim or paper around it, its pose or expression), add \`"pictures": [{ "id": "<its id>", "note": "what to change in it" }]\` to ${PLAN_FILE} beside "pages": it is drawn again before the pages, and the pages that show it keep their places for it.` : ''}\n${picturePlanNote(style, this.own(), style?.led ? 'script' : undefined)}`;
+The pictures drawn so far: ${drawn.map((p) => `${p.id}${style.led && p.pages.length ? ` (${p.pages.join(', ')}${p.cue !== undefined ? `, from the page's line ${p.cue + 1}` : ''})` : ''} (${p.what})`).join('; ')}. A page's code can't change what is inside a picture. When the user's words are about a picture itself (how a person or thing in it looks, a box, border, rim or paper around it, its pose or expression), add \`"pictures": [{ "id": "<its id>", "note": "what to change in it" }]\` to ${PLAN_FILE} beside "pages": it is drawn again before the pages, and the pages that show it keep their places for it.` : ''}${style.led ? `
+This film's pages are written from its scenes, with no page agent: a page in "pages" changes nothing on screen by itself. Whatever the user sees wrong inside a scene (a face, eyes, hands, a pose, a word lettered in it) is changed only by drawing that scene again in "pictures", with a note of what to change; the scene shown at a moment is the last one that starts at or before that line of its page (the user's <references> give the page and the line). Name every scene the user's words reach ("this one and the next": both).` : ''}\n${picturePlanNote(style, this.own(), style?.led ? 'script' : undefined)}`;
   }
 
   /** what the planner is told of a change asked at the first page: it is about the whole film, whose other pages are not
