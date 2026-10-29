@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Director } from './director.js';
 import { writeIn } from './projectfs.js';
-import { lookPrefix, openaiImages, picturePageNote, picturePlanNote, pictureSize, picturePlan, pictureIssues, picturePrompt, pictureStyle, picturesOn, readPictures, sniffPicture, type ImageProvider, type PictureStyle } from './pictures.js';
+import { ledPage, lookPrefix, openaiImages, picturePageNote, picturePlanNote, pictureSize, picturePlan, pictureIssues, picturePrompt, pictureStyle, picturesOn, readPictures, sniffPicture, type ImageProvider, type PictureStyle } from './pictures.js';
 import type { AgentRuntime } from './runtime/types.js';
 import type { StudioEvent } from './events.js';
 
@@ -296,21 +296,34 @@ test('a cut-out with a ground behind it, or a sticker\'s white rim, is told apar
 
 const LED: PictureStyle = { kinds: ['scene', 'character'], max: 30, quality: 'medium', prefix: 'Flat vector office comedy', avoid: '', led: true, cast: true };
 
-test('a style drawn in pictures: its cast sheet first and on no page, a scene for every beat it shows', () => {
+test('a style drawn in pictures: its cast sheet at the storyboard, its scenes once the narration is written, line by line', () => {
+  // the storyboard: the cast sheet only
   const note = picturePlanNote(LED);
   assert.match(note, /drawn in pictures/);
+  assert.match(note, /planned after the narration is written, line by line/);
   assert.match(note, /cast sheet, id `cast`, on no page/);
-  assert.match(note, /one every 8–12 seconds/);
-  assert.match(note, /at most 30 pictures/);
   assert.match(note, /has no `kit`/);
   assert.doesNotMatch(note, /3–6 pictures usually/);
-  assert.match(note, /written in code on top/);
-  const words = picturePlanNote({ ...LED, words: true });
-  assert.match(words, /words and all/);
-  assert.match(words, /quote them exactly in `what`/);
-  assert.doesNotMatch(words, /never in a picture/);
-  const ok = { pictures: [{ id: 'cast', kind: 'scene', what: 'Sam, a salesman with curly hair; Priya, a CHRO', pages: [] }, { id: 'p01-a', kind: 'scene', what: 'Sam at his desk, wide shot', pages: ['p01'] }] };
-  assert.deepEqual(pictureIssues(ok, ids, LED), []);
+  // after the narration: its real lines, numbered, one scene for every line or two
+  const lines = [{ page: 'p01', lines: ['Meet Sam.', 'Sam has forty-seven slides ready.'] }];
+  const scenes = picturePlanNote(LED, [], lines);
+  assert.match(scenes, /p01:\n  0\. Meet Sam\.\n  1\. Sam has forty-seven slides ready\./);
+  assert.match(scenes, /One scene for every two or three lines above/);
+  assert.match(scenes, /At most 30 in all/);
+  assert.match(scenes, /Lettering inside a scene only for a short sign/);
+  const words = picturePlanNote({ ...LED, words: true }, [], lines);
+  assert.match(words, /Never the narration's sentences and never the scene's description/);
+  assert.match(picturePlanNote(LED, [], 'script'), /a page's lines are its cues in script\.js/);
+  const ok = { pictures: [{ id: 'cast', kind: 'scene', what: 'Sam, a salesman with curly hair; Priya, a CHRO', pages: [] }, { id: 'p01-a', kind: 'scene', what: 'Sam at his desk, wide shot', pages: ['p01'], cue: 0, focus: [0.4, 0.3] }] };
+  assert.deepEqual(pictureIssues(ok, ['p01'], LED, [], { p01: 2 }), []);
+  // at the storyboard a scene is not held to lines it doesn't have yet
+  assert.deepEqual(pictureIssues({ pictures: [ok.pictures[0]] }, ids, LED), []);
+  const loose = pictureIssues({ pictures: [ok.pictures[0], { id: 'p01-a', kind: 'scene', what: 'Sam at his desk, wide shot', pages: ['p01', 'p02'] }] }, ids, LED, [], { p01: 2, p02: 2, p03: 2 }).join('\n');
+  assert.match(loose, /p01-a is on 2 pages/);
+  assert.match(loose, /p01-a needs `cue`/);
+  assert.match(loose, /p01-a needs `focus`/);
+  assert.match(loose, /p03 has no scene/);
+  assert.match(pictureIssues({ pictures: [ok.pictures[0], { ...ok.pictures[1], cue: 2 }] }, ['p01'], LED, [], { p01: 2 }).join('\n'), /p01-a is on line 2 of p01, which has 2 lines \(0–1\)/);
   assert.match(pictureIssues({ pictures: [ok.pictures[1]] }, ids, LED).join('\n'), /the first picture is the film's cast sheet, id "cast"/);
   assert.match(pictureIssues({ pictures: [{ ...ok.pictures[0], pages: ['p01'] }] }, ids, LED).join('\n'), /the cast sheet is on no page/);
   const [sheet, scene] = picturePlan(ok, LED);
@@ -343,4 +356,23 @@ test('a picture refused for too many at once is asked for again after the wait i
     assert.equal(Buffer.from(got).toString(), 'png');
     assert.equal(calls, 3);
   } finally { globalThis.fetch = real; }
+});
+
+test('a page of a style drawn in pictures is written from its scenes\' cues and focus, with no model', () => {
+  const scene = (id: string, cue: number, focus: [number, number]) => ({ id, kind: 'scene' as const, what: id, shape: 'film' as const, pages: ['p02'], cue, focus, file: `${id}-0123456789.png`, prompt: '', w: 1672, h: 941, alpha: false, at: '' });
+  // lines at 0, 2.5, 6 and 9 s of a 12 s page; the second scene put on line 2, listed first. Each draws over the first
+  // 45% of its time (2–3.5 s), then stands whole
+  const js = ledPage('p02', [scene('p02-b', 2, [0.6, 0.2]), scene('p02-a', 0, [0.3, 0.4])], [0, 2.5, 6, 9], 12);
+  assert.match(js, /^\/\/ drawn from the storyboard[^\n]*\nENGINE\.visual\('p02', \(P\) => \{/);
+  const calls = js.split('\n').filter((l) => l.includes('P.scene'));
+  assert.deepEqual(calls, [
+    "  P.scene('assets/gen/p02-a-0123456789.png', { at: 0.05, dur: 2.7, focus: [0.3, 0.4] });",
+    "  P.scene('assets/gen/p02-b-0123456789.png', { at: P.c(2), dur: 2.7, focus: [0.6, 0.2] });",
+  ]);
+  // a second scene on a line the first is still drawing on waits for it
+  const close = ledPage('p02', [scene('p02-a', 0, [0.5, 0.5]), scene('p02-b', 1, [0.5, 0.5])], [0, 1, 4], 8).split('\n').filter((l) => l.includes('P.scene'));
+  assert.match(close[0], /at: 0\.05, dur: 2\.0,/);
+  assert.match(close[1], /at: P\.c\(1, 1\.3\d\), dur: 2\.5,/);
+  // a page with no scene of its own holds the last one before it
+  assert.match(ledPage('p03', [], [0, 3], 6, scene('p02-b', 2, [0.6, 0.2])), /P\.scene\('assets\/gen\/p02-b-0123456789\.png', \{ at: 0, dur: 0\.3/);
 });

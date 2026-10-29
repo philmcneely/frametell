@@ -13,7 +13,7 @@ import { designedFonts, designedIssues, designedLook, type Look } from './look.j
 import { BRAND_DIR, SIGN_OFF_HOLD, cornerMark, signsOff } from './brand.js';
 import { assetPath, assetsOn, userAssets } from './assets.js';
 import { inkScript } from './ink.js';
-import { PICTURES_DIR, PICTURES_MANIFEST, cutOut, inkPath, cutOutTrouble, lookPrefix, pictureFile, pictureIssues, pictureKey, picturePageNote, picturePath, picturePlan, picturePlanNote, picturePrompt, pictureReviewNote, pictureSize, pictureStyle, picturesOn, readPictures, sniffPicture, type ImageProvider, type Picture, type PicturePlan, type Pictures } from './pictures.js';
+import { PICTURES_DIR, PICTURES_MANIFEST, cutOut, inkPath, cutOutTrouble, lookPrefix, pictureFile, pictureIssues, pictureKey, ledPage, picturePageNote, picturePath, picturePlan, picturePlanNote, picturePrompt, pictureReviewNote, pictureSize, pictureStyle, picturesOn, readPictures, sniffPicture, type ImageProvider, type Picture, type PicturePlan, type Pictures } from './pictures.js';
 import { ENGINE_DIR } from '@frametell/engine/tools/project.mjs';
 import { freeze, openIn, readIn, writeIn } from './projectfs.js';
 import { briefFile, runResearch, type ResearchLimits } from './research/research.js';
@@ -553,9 +553,28 @@ export class Director {
       r = await this.send(s, `script.js has no narration for ${missing.join(', ')}: every page of storyboard.json needs its entry in PAGES, in the storyboard's order, with the same id. Add the missing pages and keep the ones already written, then run node engine/tools/script.mjs and stop. ` + replyNote(this.o.brief.replyLang, this.o.brief.lang), undefined, PLAN_THINKING);
     }
     await this.commit(this.say('口播', 'Narration'));
+    // a style drawn in pictures plans its scenes now, against the narration's real lines
+    if (this.pictureStyle()?.led) await this.planScenes(s);
     await s.close();
     this.state.stage = 'narrate'; this.save();
     this.emit({ type: 'stage', stage: 'script', status: 'done', detail: check.out.split('\n').pop() });
+  }
+
+  /** A style drawn in pictures: its scenes, one for every line or two of the narration just written, each with the line
+   *  it starts on and where its drawing starts (pictures.ts ledPlanNote); the pages are drawn from them by rule */
+  private async planScenes(s: AgentSession) {
+    const style = this.pictureStyle()!, tl = await this.project.timeline();
+    const lines = tl.pages.map((p) => ({ page: p.id, lines: p.cues.map((c) => c.text) }));
+    const cues = Object.fromEntries(tl.pages.map((p) => [p.id, p.cues.length])), ids = tl.pages.map((p) => p.id);
+    await this.send(s, picturePlanNote(style, this.own(), lines) + replyNote(this.o.brief.replyLang, this.o.brief.lang), undefined, PLAN_THINKING);
+    for (let ask = 0; ; ask++) {
+      let issues: string[];
+      try { issues = pictureIssues(this.project.storyboard().look, ids, style, this.own(), cues); } catch (e) { issues = [`storyboard.json can't be read: ${(e as Error).message}`]; }
+      if (!issues.length) break;
+      if (ask === 2) this.fail('script', this.say('画面没有排好：', 'The scenes were not planned: ') + issues.join('; '));
+      await this.send(s, `The scenes in look.pictures still need fixing:\n- ${issues.join('\n- ')}\nFix them in storyboard.json and stop.`, undefined, PLAN_THINKING);
+    }
+    await this.commit(this.say('按口播排好画面', 'Scenes planned from the narration'));
   }
 
   /** a storyboard with more pages than the length the user chose holds (lengthBudget) */
@@ -1177,6 +1196,12 @@ export class Director {
       const was = this.state.pages[p.id];
       return was?.status === 'checking' && was.ref && was.rounds > 0 && !this.state.revision?.[p.id] && this.project.exists(`pages/${p.id}.js`) ? [[p.id, { ref: was.ref, rounds: was.rounds }]] : [];
     }));
+    // a style drawn in pictures: its pages are written from the storyboard, no model draws them
+    if (this.pictureStyle()?.led) {
+      for (const p of todo) this.ledPage(sb, p, tl);
+      await this.commit(this.say('按分镜画好各页', 'Pages drawn from the storyboard'));
+      return this.pagesDone(only, o);
+    }
     for (const p of todo) this.setPage(p.id, { status: 'queued', rounds: 0, issues: [], failures: failures(p.id) });
     // the film's drawing (not a redraw of some pages, not a change): in lanes, carrying on from the first page's session
     const opener = tl.pages[0]?.id, seed = opener && !todo.some((p) => p.id === opener) ? this.state.pages[opener]?.ref : undefined;
@@ -1300,8 +1325,20 @@ export class Director {
     return to;
   }
 
+  /** a page of a style drawn in pictures, written from its scenes' cues and focus (pictures.ts ledPage) */
+  private ledPage(sb: Storyboard, t: PageTiming, tl: { pages: PageTiming[] }) {
+    const plan = picturePlan(sb.look, this.pictureStyle(), this.own()), drawn = readPictures(this.o.dir).items;
+    const scenes = picturesOn(plan, drawn, t.id).filter((p) => p.kind === 'scene');
+    // a page with no scene of its own holds the last one before it
+    const earlier = tl.pages.slice(0, tl.pages.findIndex((p) => p.id === t.id)).reverse();
+    const before = earlier.map((p) => picturesOn(plan, drawn, p.id).filter((x) => x.kind === 'scene').pop()).find(Boolean);
+    this.project.write(`pages/${t.id}.js`, ledPage(t.id, scenes, t.cues.map((c) => c.at), t.end - t.start, before));
+    this.setPage(t.id, { status: 'ok', rounds: 0, issues: [], failures: this.state.pages[t.id]?.failures });
+  }
+
   private async page(sb: Storyboard, t: PageTiming, lane?: Lane) {
     const id = t.id;
+    if (this.pictureStyle()?.led) return this.ledPage(sb, t, await this.project.timeline());
     const was = this.inChecks.get(id);
     const st: PageState = { status: 'drawing', rounds: 0, issues: [], failures: this.state.pages[id]?.failures };
     this.setPage(id, st);
@@ -1427,6 +1464,11 @@ export class Director {
   async review() {
     this.emit({ type: 'stage', stage: 'review', status: 'start' });
     this.state.stage = 'review'; this.save();
+    // a style drawn in pictures: its pages are written by rule, nothing for a reviewer to fix
+    if (this.pictureStyle()?.led) {
+      this.emit({ type: 'stage', stage: 'review', status: 'skipped', detail: this.say('各页按分镜生成，无需检查', 'Pages are drawn from the storyboard: nothing to check') });
+      return this.ready();
+    }
     const defectsOnly = this.o.review === 'defects';
     const all = await this.project.lint(undefined, ['--determinism']);
     // defects: a frame that differs by where playback came from (it flickers), or page code that fails; a full review
@@ -1700,7 +1742,7 @@ ${this.project.read('script.js')}
     if (!style) return '';
     const drawn = this.planned().filter((p) => readPictures(this.o.dir).items.some((x) => x.id === p.id));
     return `\nThis film may use generated pictures, listed in storyboard.json's \`look.pictures\` (read storyboard.json to change it). When the change asks for what code draws poorly (people who look like people, a character or creature, the person's own mascot or product, a real thing, a place), add or change pictures there and say \`picture <id>\` in the note of each page that shows one: they are drawn before the pages. Leave every picture that stays exactly as it is (same id and words), or it is drawn and paid for again.${drawn.length ? `
-The pictures drawn so far: ${drawn.map((p) => `${p.id} (${p.what})`).join('; ')}. A page's code can't change what is inside a picture. When the user's words are about a picture itself (how a person or thing in it looks, a box, border, rim or paper around it, its pose or expression), add \`"pictures": [{ "id": "<its id>", "note": "what to change in it" }]\` to ${PLAN_FILE} beside "pages": it is drawn again before the pages, and the pages that show it keep their places for it.` : ''}\n${picturePlanNote(style, this.own())}`;
+The pictures drawn so far: ${drawn.map((p) => `${p.id} (${p.what})`).join('; ')}. A page's code can't change what is inside a picture. When the user's words are about a picture itself (how a person or thing in it looks, a box, border, rim or paper around it, its pose or expression), add \`"pictures": [{ "id": "<its id>", "note": "what to change in it" }]\` to ${PLAN_FILE} beside "pages": it is drawn again before the pages, and the pages that show it keep their places for it.` : ''}\n${picturePlanNote(style, this.own(), style?.led ? 'script' : undefined)}`;
   }
 
   /** what the planner is told of a change asked at the first page: it is about the whole film, whose other pages are not
