@@ -114,7 +114,11 @@ interface State {
   pictures?: 'done' | 'none';
   /** the first page waits for the user to confirm the look before the others are drawn, or they did */
   firstPage?: 'waiting' | 'done';
+  /** the lanes drawing the pages now: each one's session name, its transcript (project-relative) and the pages it has
+   *  to draw, so a run that stops (a pause, credits, a lost box) goes on in the same conversations, not new ones */
+  lanes?: SavedLane[];
 }
+interface SavedLane { name: string; file: string; pages: string[] }
 
 /** pieces of work side by side: all run to the end, and the first failure is thrown once all have */
 async function both(...work: Promise<unknown>[]) {
@@ -155,6 +159,18 @@ export function crashText(raw: string, id: string): string {
 const crashPrompt = (id: string, crash: string) => `pages/${id}.js throws when it runs, so it cannot be checked with screenshots yet:
 ${crash}
 Fix this error first: it is most likely a call to a function that does not exist, or wrong arguments. Go by this film's components and worked example, never guess the engine's API. Fix it with edit, all edits in one reply, each with finish: true: the round ends once they apply, no reply needed.`;
+
+/** the planner's conversation, carried on after its run was cut short (a lost box, a restart): it goes on from where it
+ *  was, never from the top (2026-10-29: a storyboard begun again from nothing cost more than the first try) */
+const storyboardResumed = (written: boolean) => `The run was interrupted while you worked and has now resumed: this conversation is where you left off, and the project's files are as you left them. ${written ? 'storyboard.json is on disk as you last wrote it.' : 'storyboard.json has not been written yet.'} Carry on from there: don't read again what you have already read and don't start the storyboard over; finish it, then stop and report.`;
+/** an earlier planner's storyboard.json, found with no conversation to carry on (it did not travel): finished, not redone */
+const storyboardFound = `
+
+An earlier run was cut short after it began storyboard.json, which is on disk. Read it first and finish it: keep what is there and done well, complete what is missing and fix what is wrong, rather than writing it again from the start.`;
+/** a lane going on in its own conversation after its run stopped, with the page it is on next */
+const laneResumed = (id: string, begun: boolean) => `The run was stopped and has now resumed in this same conversation; the project's files are as they were. ${begun ? `pages/${id}.js is on disk as you left it: finish it rather than starting it over.` : ''}
+
+`;
 
 /**
  * A page that already works, changed: the current code is handed over, and the change is made with targeted edits.
@@ -204,8 +220,9 @@ export function lanesOf<T>(items: T[], n: number): T[][] {
   const size = Math.ceil(items.length / Math.max(1, n));
   return Array.from({ length: Math.ceil(items.length / size) }, (_, i) => items.slice(i * size, (i + 1) * size));
 }
-/** a lane: its session (opened with its first page), the page it is on, and whether it has drawn one already */
-interface Lane { name: string; resume?: string; s?: AgentSession; cur: string; drawn: boolean }
+/** a lane: its session (opened with its first page), the page it is on, and whether it has drawn one already.
+ *  `again`: a lane of a run that stopped, going on in its own transcript (its next message says so, once) */
+interface Lane { name: string; resume?: string; s?: AgentSession; cur: string; drawn: boolean; again?: boolean }
 
 /** components one kit session writes, one after the other: a session's first turn writes its whole prompt to the cache
  *  (~9k tokens, 2026-10-28), so two to a session halve that, and the pages wait on two short components at most */
@@ -443,9 +460,23 @@ export class Director {
     return runtime.open({ name, system, cwd: this.o.dir, maxTurns, signal, ...tools, onEvent: (event) => {
       // a lane's session speaks for the page it is on, so the panel shows each page's work on that page
       if (shown || event.type === 'turn') this.emit({ type: 'agent', session: shownAs?.() ?? name, event });
-      if (event.type === 'turn') { this.countTurn(event.usage, prices, runtime.model); if (name.startsWith('page-')) this.firstTurn?.(); }
+      if (event.type === 'turn') { this.countTurn(event.usage, prices, runtime.model); if (name.startsWith('page-')) this.firstTurn?.(); this.afterTurn?.(name); }
     } }, resume);
   }
+  /** called after each model turn of any session, with its name (the storyboard keeps its draft as it goes) */
+  private afterTurn?: (session: string) => void;
+  /**
+   * A transcript saved by a run before this one, where this process finds it: a host may restore the project elsewhere
+   * (another box, another folder), and a session's file is always `.studio/sessions/<name>.json` of its project. A ref
+   * that is no file path (a runtime that keeps its sessions itself) is as it was.
+   */
+  private here(ref: string | undefined) {
+    if (!ref || !path.isAbsolute(ref) || fs.existsSync(ref)) return ref;
+    const local = this.project.file(`.studio/sessions/${path.basename(ref)}`);
+    return fs.existsSync(local) ? local : ref;
+  }
+  /** a saved transcript there is to carry on: a file on disk, or a ref of a runtime that keeps its own */
+  private resumable(ref: string | undefined): ref is string { return !!ref && (!path.isAbsolute(ref) || fs.existsSync(ref)); }
   private async send(s: AgentSession, text: string, images?: string[], thinking?: Thinking) {
     const r = await s.send({ text, images, thinking });
     if (r.stopReason === 'aborted') throw new DOMException('aborted', 'AbortError');
@@ -477,6 +508,9 @@ export class Director {
       fs.mkdirSync(this.project.file('materials'), { recursive: true });
       fs.writeFileSync(this.project.file('materials/research.md'), briefFile(out));
       this.state.research = 'done'; this.save();
+      // committed: a host carries the project to another box from what was committed last, and research read again is
+      // paid again
+      await this.commit(this.say('调研', 'Research'));
       const { searches, pages, folders } = out.read;
       const detail = this.o.brief.replyLang === 'en'
         ? [searches && `${searches} searches`, pages && `${pages} pages read`, folders && `${folders} folder${folders > 1 ? 's' : ''} read`, `${out.sources.length} sources`].filter(Boolean).join(', ')
@@ -492,13 +526,30 @@ export class Director {
 
   // ── ① storyboard ──────────────────────────────────────────────────────────────────────────────
   async storyboard(): Promise<Storyboard> {
-    this.emit({ type: 'stage', stage: 'storyboard', status: 'start' });
+    // a storyboard cut short (its box lost, the app closed) goes on from where it was: in the planner's own conversation
+    // when its transcript is here (saved every turn), else from the storyboard.json it left. Never from the top: the
+    // takeover of 2026-10-29 planned the whole film again (36 turns) and paid for it twice
+    const ref = this.here(this.state.planner), carry = this.resumable(ref), begun = this.project.exists('storyboard.json');
+    this.emit({ type: 'stage', stage: 'storyboard', status: 'start', ...(carry || begun ? { detail: carry ? `resumed: the planner's conversation carries on${begun ? ', storyboard.json begun' : ''}` : 'resumed: storyboard.json begun, finished in a new conversation' } : {}) });
     if (!fs.existsSync(this.project.file('.git'))) this.project.initHistory();
     // only what the agent can read: md/txt/images. PDF/Word/PPT/EPUB are parsed beforehand into x.md (or x.pdf.md)
     const all = fs.existsSync(this.project.file('materials')) ? fs.readdirSync(this.project.file('materials')).filter((f) => !f.startsWith('.')) : [];
     const materials = all.filter((f) => /\.(md|markdown|txt|png|jpe?g|webp|gif)$/i.test(f));
-    const s = await this.session('planner', plannerSystem(this.o.style, this.o.brief.preferences, this.o.brief.styleNotes, this.o.brief.brand, userAssets(this.project.dir)), MAX.planTurns, this.state.planner);
-    let r = await this.send(s, storyboardPrompt(this.o.brief, this.o.style, materials, picturePlanNote(this.pictureStyle(), this.own())), undefined, PLAN_THINKING);
+    const s = await this.session('planner', plannerSystem(this.o.style, this.o.brief.preferences, this.o.brief.styleNotes, this.o.brief.brand, userAssets(this.project.dir)), MAX.planTurns, carry ? ref : undefined);
+    // the transcript is named before the first turn, not once the exchange is over (it was: a run lost mid-exchange had
+    // nothing to carry on from)
+    this.state.planner = s.ref; this.save();
+    // the draft is committed whenever the planner changed it: a host takes its checkpoint after each commit, so a box
+    // lost later carries the draft and the conversation that wrote it to the next one
+    let draft = begun ? this.project.read('storyboard.json') : undefined;
+    this.afterTurn = (name) => {
+      if (name !== 'planner' || !this.project.exists('storyboard.json')) return;
+      const now = this.project.read('storyboard.json');
+      if (now !== draft) { draft = now; void this.commit(this.say('分镜（进行中）', 'Storyboard (in progress)')).catch(() => {}); }
+    };
+    let r = await this.send(s, carry
+      ? storyboardResumed(begun) + ' ' + replyNote(this.o.brief.replyLang, this.o.brief.lang)
+      : storyboardPrompt(this.o.brief, this.o.style, materials, picturePlanNote(this.pictureStyle(), this.own())) + (begun ? storyboardFound : ''), undefined, PLAN_THINKING);
     this.state.planner = s.ref; this.save();
     // a turn can end without the file (seen: a gateway answering a one-token "." mid-turn); ask once more, as for pages
     if (!this.project.exists('storyboard.json') && r.stopReason !== 'max_turns') r = await this.send(s, 'storyboard.json does not exist yet; write it, then stop and report. ' + replyNote(this.o.brief.replyLang, this.o.brief.lang), undefined, PLAN_THINKING);
@@ -517,6 +568,7 @@ export class Director {
       if (!reds.length || round > MAX.storyboardFix) break;
       r = await this.send(s, storyboardFixPrompt(issues, this.o.brief), undefined, PLAN_THINKING);
     }
+    this.afterTurn = undefined;
     await this.commit(this.say('分镜', 'Storyboard'));
     await s.close();
     const sb = this.project.storyboard();
@@ -531,7 +583,7 @@ export class Director {
     this.emit({ type: 'stage', stage: 'script', status: 'start' });
     this.state.stage = 'script'; this.save();
     this.serverMeta();
-    const s = await this.session('planner', plannerSystem(this.o.style, this.o.brief.preferences, this.o.brief.styleNotes, this.o.brief.brand, userAssets(this.project.dir)), MAX.planTurns, this.state.planner);
+    const s = await this.session('planner', plannerSystem(this.o.style, this.o.brief.preferences, this.o.brief.styleNotes, this.o.brief.brand, userAssets(this.project.dir)), MAX.planTurns, this.here(this.state.planner));
     let r = await this.send(s, scriptPrompt(feedback, this.o.brief) + this.unseen('planner'), undefined, PLAN_THINKING);
     this.state.planner = s.ref; this.save();
     let check: Awaited<ReturnType<Project['scriptCheck']>>;
@@ -1179,7 +1231,13 @@ export class Director {
 
   /** `hold`: only these pages, and the film stays at its pages after them (the first page, waiting for the user) */
   async pages(only?: string[], o: { hold?: boolean } = {}) {
-    this.emit({ type: 'stage', stage: 'pages', status: 'start' });
+    // the lanes of a run that stopped (a pause, credits, a lost box) whose conversations are here: each goes on in its own
+    // with the pages it has left. Drawn in new lanes instead (2026-10-29: six, after a stop for credits), every one paid
+    // to read its whole prompt and the film's first page again
+    const kept = !only && !this.state.revision && this.lanesOn() ? this.keptLanes() : [];
+    const done = Object.values(this.state.pages).filter((p) => p.status === 'ok' || p.status === 'flagged').length;
+    // said in the stage's detail (kept in the run's events, not shown), so a resumed run's reuse can be seen
+    this.emit({ type: 'stage', stage: 'pages', status: 'start', ...(!only && this.state.lanes ? { detail: `resumed: ${done} page${done === 1 ? '' : 's'} drawn already; ${kept.length ? `lanes carried on: ${kept.map((l) => `${l.name} (${l.pages.join(' ')})`).join(', ')}` : 'no lane conversation to carry on'}` } : {}) });
     this.state.stage = 'pages'; this.save();
     // this film's own components, when it has them: loaded before every page (META.extras), and no page's file tools
     // may change them
@@ -1194,7 +1252,7 @@ export class Director {
     // conversations are kept, so each picks up at the check it was in. Drawn again from nothing, they were paid twice
     this.inChecks = new Map(todo.flatMap((p) => {
       const was = this.state.pages[p.id];
-      return was?.status === 'checking' && was.ref && was.rounds > 0 && !this.state.revision?.[p.id] && this.project.exists(`pages/${p.id}.js`) ? [[p.id, { ref: was.ref, rounds: was.rounds }]] : [];
+      return was?.status === 'checking' && was.ref && was.rounds > 0 && !this.state.revision?.[p.id] && this.project.exists(`pages/${p.id}.js`) ? [[p.id, { ref: this.here(was.ref)!, rounds: was.rounds }]] : [];
     }));
     // a style drawn in pictures: its pages are written from the storyboard, no model draws them
     if (this.pictureStyle()?.led) {
@@ -1202,18 +1260,36 @@ export class Director {
       await this.commit(this.say('按分镜画好各页', 'Pages drawn from the storyboard'));
       return this.pagesDone(only, o);
     }
+    // a page that failed is drawn again on its own terms (redraw), never in the lane it failed in
+    const failed = new Set(todo.filter((p) => this.state.pages[p.id]?.status === 'failed').map((p) => p.id));
     for (const p of todo) this.setPage(p.id, { status: 'queued', rounds: 0, issues: [], failures: failures(p.id) });
     // the film's drawing (not a redraw of some pages, not a change): in lanes, carrying on from the first page's session
-    const opener = tl.pages[0]?.id, seed = opener && !todo.some((p) => p.id === opener) ? this.state.pages[opener]?.ref : undefined;
-    if (!only && !this.state.revision && this.lanesOn() && todo.length > 1) {
-      const fresh = todo.filter((p) => !this.inChecks.has(p.id));
-      const runs = lanesOf(fresh, laneCount(tl.pages.length)).map((pages) => {
-        const name = `page-${pages[0].id}`;
-        const lane: Lane = { name, cur: name, drawn: !!seed, resume: seed && fs.existsSync(seed) ? this.fork(seed, name) : undefined };
-        return async () => { try { for (const p of pages) { if (this.o.signal?.aborted) break; await this.page(sb, p, lane); } } finally { await lane.s?.close(); if (lane.s) this.drewAll = lane.s.ref; } };
-      });
-      // pages picked up in their checks go on in sessions of their own, as before
-      const picked = todo.filter((p) => this.inChecks.has(p.id)).map((p) => () => this.page(sb, p));
+    const opener = tl.pages[0]?.id, seed = opener && !todo.some((p) => p.id === opener) ? this.here(this.state.pages[opener]?.ref) : undefined;
+    const left = new Set(todo.map((p) => p.id));
+    const goOn = kept.map((l) => ({ ...l, pages: l.pages.filter((id) => left.has(id) && !failed.has(id)) })).filter((l) => l.pages.length);
+    if (!only && !this.state.revision && this.lanesOn() && (todo.length > 1 || goOn.length)) {
+      const taken = new Set(goOn.flatMap((l) => l.pages));
+      const fresh = todo.filter((p) => !this.inChecks.has(p.id) && !taken.has(p.id));
+      // a new lane's transcript never takes the name of one going on (a lane named for a page that failed in it, say)
+      const used = new Set(goOn.map((l) => l.file));
+      const fileFor = (name: string) => { let f = `.studio/sessions/${name}.json`; for (let i = 2; used.has(f); i++) f = `.studio/sessions/${name}-${i}.json`; used.add(f); return f; };
+      const planned = [
+        // a lane going on: its own conversation, the page it was on first (in its checks if it got there: page() picks
+        // that up from inChecks), told once that it was stopped
+        ...goOn.map((l) => ({ saved: l, pages: todo.filter((p) => l.pages.includes(p.id)), lane: { name: l.name, cur: l.name, drawn: true, again: true, resume: this.project.file(l.file) } as Lane })),
+        ...lanesOf(fresh, laneCount(tl.pages.length)).map((pages) => {
+          const name = `page-${pages[0].id}`, file = fileFor(name);
+          const forked = seed && fs.existsSync(seed) ? this.fork(seed, name, file) : undefined;
+          if (!forked) fs.rmSync(this.project.file(file), { force: true });   // an earlier run's, whose pages are all drawn
+          // (a transcript under the lane's own name is where the runtime keeps it anyway)
+          const lane: Lane = { name, cur: name, drawn: !!seed, resume: forked ?? (file === `.studio/sessions/${name}.json` ? undefined : this.project.file(file)) };
+          return { saved: { name, file, pages: pages.map((p) => p.id) }, pages, lane };
+        }),
+      ];
+      this.state.lanes = planned.map((x) => x.saved); this.save();
+      const runs = planned.map(({ pages, lane }) => async () => { try { for (const p of pages) { if (this.o.signal?.aborted) break; await this.page(sb, p, lane); } } finally { await lane.s?.close(); if (lane.s) this.drewAll = lane.s.ref; } });
+      // pages picked up in their checks outside any lane going on: in sessions of their own, as before
+      const picked = todo.filter((p) => this.inChecks.has(p.id) && !taken.has(p.id)).map((p) => () => this.page(sb, p));
       const m = this.model('page-').runtime.model;
       const paysToCache = m.provider === 'anthropic' || /claude/i.test(m.id);
       const warm = new Promise<void>((ok) => { this.firstTurn = ok; setTimeout(ok, 90_000); });
@@ -1257,7 +1333,7 @@ export class Director {
     if (o.hold && !bad.length) return;
     this.emit({ type: 'stage', stage: 'pages', status: bad.length ? 'failed' : 'done', detail: bad.length ? this.say(`失败：${ids.join('、')}`, `Failed: ${ids.join(', ')}`) : undefined });
     if (bad.length) throw new Error(this.notDrawn(bad));
-    this.state.stage = 'review'; this.save();
+    this.state.stage = 'review'; this.state.lanes = undefined; this.save();
   }
 
   /**
@@ -1316,10 +1392,17 @@ export class Director {
 
   /** whether pages are drawn in lanes: a runtime whose session can be resumed from a copy of another's transcript */
   private lanesOn() { return this.model('page-').runtime.id === 'pi'; }
-  /** a copy of a session's transcript under `name`, to resume as a session of its own (the first page's for a lane) */
-  private fork(ref: string, name: string) {
+  /** the saved lanes whose transcripts are here, with the pages each has not drawn yet (one that failed included: the
+   *  caller leaves those out) */
+  private keptLanes(): SavedLane[] {
+    const open = (id: string) => !['ok', 'flagged'].includes(this.state.pages[id]?.status ?? '');
+    return (this.state.lanes ?? []).filter((l) => fs.existsSync(this.project.file(l.file))).map((l) => ({ ...l, pages: l.pages.filter(open) })).filter((l) => l.pages.length);
+  }
+  /** a copy of a session's transcript under `name` (at `file`, project-relative), to resume as a session of its own (the
+   *  first page's for a lane) */
+  private fork(ref: string, name: string, file = `.studio/sessions/${name}.json`) {
     if (!fs.existsSync(ref)) return ref;   // nothing on disk to copy (a runtime that keeps it elsewhere): resumed as it is
-    const to = this.project.file(`.studio/sessions/${name}.json`);
+    const to = this.project.file(file);
     fs.mkdirSync(path.dirname(to), { recursive: true });
     if (path.resolve(ref) !== path.resolve(to)) fs.copyFileSync(ref, to);
     return to;
@@ -1349,7 +1432,8 @@ export class Director {
       // a page picked up in its checks resumes its conversation; a lane's is shared, so it goes on in a copy
       else s = await this.session(`page-${id}`, system, MAX.pageTurns, was?.ref && this.lanesOn() ? this.fork(was.ref, `page-${id}`) : was?.ref, undefined, { answers: [FLAG] });
       // in a lane the session has drawn pages before this one: it says which page it is on now in every message
-      const next = lane?.drawn ? laneNote(id) : '';
+      const next = (lane?.again ? laneResumed(id, this.project.exists(`pages/${id}.js`)) : '') + (lane?.drawn ? laneNote(id) : '');
+      if (lane) lane.again = false;
       const on = lane ? `pages/${id}.js: ` : '';
       // a page the change adds has no code yet (seen: an end card added to the storyboard; reading its code failed the
       // page on every Continue): it is drawn from nothing, with the change as its brief
