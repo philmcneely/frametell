@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { componentNames, keepComponents, kitIssues, kitPlan, kitStage, kitTimes, kitWanted, reservedNames } from './kit.js';
+import { KIT_MAX, componentNames, keepComponents, kitCheckPage, kitIssues, kitLocate, kitPart, kitPlan, kitStage, kitTimes, kitWanted, reservedNames, styleNames } from './kit.js';
 
 const ids = Array.from({ length: 10 }, (_, i) => `p${String(i + 1).padStart(2, '0')}`);
 
@@ -13,19 +13,20 @@ test('the engine\'s own drawing calls are reserved: a film component may not rep
   assert.ok(!r.has('chinaMap'));
 });
 
-test('the kit plan keeps well-formed components, once each, at most eight', () => {
+test('the kit plan keeps well-formed components on two pages or more, once each, at most three', () => {
   const look = { kit: [
     { name: 'globe', what: 'a turning globe', pages: ['p01', 'p02', 'p09'] },
     { name: 'globe', what: 'again', pages: ['p01', 'p02', 'p03'] },
     { name: 'Bad-Name', what: 'x', pages: ['p01'] },
     { name: 'text', what: 'the engine already has this', pages: ['p01', 'p02', 'p03'] },
     { name: 'flag', what: '', pages: ['p01'] },
+    { name: 'lonely', what: 'on one page only', pages: ['p04'] },
     ...Array.from({ length: 10 }, (_, i) => ({ name: `thing${i}`, what: 'w', pages: ['p01', 'p02', 'p03'] })),
   ] };
   const plan = kitPlan(look);
   assert.equal(plan[0].name, 'globe');
-  assert.equal(plan.length, 8);
-  assert.ok(!plan.some((x) => x.name === 'text' || x.name === 'Bad-Name' || x.name === 'flag'));
+  assert.equal(KIT_MAX, 3);
+  assert.deepEqual(plan.map((x) => x.name), ['globe', 'thing0', 'thing1']);
   assert.deepEqual(kitPlan(undefined), []);
   assert.deepEqual(kitPlan({ kit: 'no' }), []);
 });
@@ -106,4 +107,35 @@ test('the kit\'s check is a project of its own: the film\'s look, the kit, and o
 test('the check sheet looks at each component once it is drawn, at most six moments', () => {
   assert.deepEqual(kitTimes([{ abs: 0 }, { abs: 3 }], 6), [2.7, 4.8]);
   assert.equal(kitTimes(Array.from({ length: 8 }, (_, i) => ({ abs: i * 3 })), 24).length, 6);
+});
+
+test("the style's own components are reserved too: a film's `presenter` would replace midcentury's on every page", () => {
+  assert.ok(styleNames('midcentury').has('presenter'));
+  assert.equal(styleNames('no-such-style').size, 0);
+  const look = { kit: [{ name: 'presenter', what: 'the host', pages: ['p01', 'p02'] }, { name: 'teacher', what: 'the host, our colours', pages: ['p01', 'p02'] }] };
+  assert.deepEqual(kitPlan(look, 'midcentury').map((x) => x.name), ['teacher']);
+  assert.deepEqual(kitPlan(look).map((x) => x.name), ['presenter', 'teacher']);   // another style has none of that name
+  assert.match(kitIssues(look, ids, 'midcentury').join('\n'), /presenter is already the style's own P\.presenter/);
+});
+
+test('an error of the kit\'s check is found in the component it was raised in, its frames as that file\'s lines', () => {
+  const parts = [
+    { name: 'globe', code: '(function () {\n  B.globe = function () {};\n})();\n', check: 'P.globe(1, 2, 3);' },
+    { name: 'rattrap', code: '(function () {\n  const a = 1;\n  B.rattrap = function () { a.b.c; };\n})();\n', check: 'P.rattrap();\nP.rattrap({ at: 2 });' },
+  ];
+  // the kit as the director puts it together: globe on lines 1–3, a blank line, rattrap on 5–8
+  const kit = parts.map((p) => p.code.trim()).join('\n\n') + '\n';
+  assert.equal(kit.split('\n')[6], '  B.rattrap = function () { a.b.c; };');
+  const r = kitLocate("runtime error (build): Cannot read properties of undefined (reading 'c') — at extras/film-kit.js:7:31, engine/runtime/engine.js:130:9", parts);
+  assert.equal(r.owner, 'rattrap');
+  assert.match(r.text, /at extras\/kit\/rattrap\.js:3:31, engine\/runtime\/engine\.js:130:9/);
+  // the check page: line 1 opens it, globe's block is lines 2–4 (its line on 3), rattrap's 5–8 (its lines on 6 and 7)
+  const page = kitCheckPage(parts.map((p) => p.check));
+  assert.equal(page.split('\n')[6].trim(), 'P.rattrap({ at: 2 });');
+  assert.deepEqual(kitLocate('x is not a function — at pages/kit.js:7:5', parts), { owner: 'rattrap', text: 'x is not a function — at extras/kit/rattrap.check.js:2:5' });
+  assert.equal(kitLocate('at pages/kit.js:3:1', parts).owner, 'globe');
+  // a part's own file names it; a frame of the engine alone names none
+  assert.equal(kitLocate(`SyntaxError in ${kitPart('globe')}`, parts).owner, 'globe');
+  assert.equal(kitLocate('boom — at engine/runtime/core.js:12:3', parts).owner, undefined);
+  assert.equal(kitLocate('at extras/kit/nobody.js:1', parts).owner, undefined);
 });

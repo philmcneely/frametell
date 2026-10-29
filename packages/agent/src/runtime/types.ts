@@ -8,7 +8,9 @@ export interface TokenUsage { input: number; output: number; cacheRead: number; 
 export type RuntimeEvent =
   | { type: 'text'; text: string }
   | { type: 'thinking'; text: string }
-  | { type: 'tool_start'; id: string; name: string; summary: string }
+  /** `input`: what the call acts on, its path or its command, for the director to read (anomaly.ts); it never goes
+   *  further than the director, which drops it from the event it passes on */
+  | { type: 'tool_start'; id: string; name: string; summary: string; input?: ToolInput }
   | { type: 'tool_end'; id: string; name: string; ok: boolean; summary?: string }
   | { type: 'turn'; usage: TokenUsage }
   | { type: 'retry'; message: string }
@@ -23,7 +25,19 @@ export type RuntimeEvent =
 /** A message the orchestrator sends into a session: text plus optional images (lint report + contact sheet). */
 export type Thinking = 'off' | 'low' | 'medium' | 'high';
 /** thinking: how hard the model should think for this turn, at most the session's own level (a check needs less than a draft) */
-export interface StageInput { text: string; images?: string[]; thinking?: Thinking }
+/** maxTurns: this exchange's cap, at most the session's own (the director's turn budget for a whole session: what it
+ *  has left) */
+export interface StageInput { text: string; images?: string[]; thinking?: Thinking; maxTurns?: number }
+/** a tool call's path or command, as the model wrote it */
+export interface ToolInput { path?: string; command?: string }
+/** the path or command of a tool call's arguments (Pi's read / bash, the Claude Agent SDK's file_path), if any */
+export function toolInput(v: unknown): ToolInput | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const o = v as Record<string, unknown>;
+  const p = o.path ?? o.file_path, c = o.command;
+  const out: ToolInput = { ...(typeof p === 'string' ? { path: p } : {}), ...(typeof c === 'string' ? { command: c } : {}) };
+  return out.path !== undefined || out.command !== undefined ? out : undefined;
+}
 
 /**
  * A tool whose call is the agent's answer to the orchestrator, in fields instead of words to parse: a page agent leaving
@@ -38,7 +52,8 @@ export interface SessionOptions {
   name: string;
   system: string;
   cwd: string;
-  /** hard cap on model turns for this session (each tool round trip is a turn) */
+  /** hard cap on model turns for each exchange (send) of this session (each tool round trip is a turn); a whole
+   *  session is held to a budget by the director, which passes what is left as StageInput.maxTurns */
   maxTurns: number;
   /** the project's files and shell (the default), or none: a session that only looks and answers */
   tools?: 'files' | 'none';
@@ -102,11 +117,16 @@ export function toolSummary(v: unknown): string {
   return s.length > 160 ? s.slice(0, 160) + '…' : s;
 }
 
+/** the files changed with edit once they exist: a page, and one of the film's components (kit.ts kitPart) */
+const EDITED_ONLY = /^(pages(-portrait)?\/p\w+|extras\/kit\/\w+)\.js$/;
+/** a file this short is still rewritten whole: a stub, or a component's lines on its check page */
+const REWRITE_LINES = 40;
 /**
- * A page that exists is changed with edit, never rewritten whole: rewriting a 300-line page to change one thing costs
- * minutes of output (seen: three 10k-token rewrites in one revision). Returns the refusal, or undefined when allowed.
+ * A page or a component that exists is changed with edit, never rewritten whole: rewriting a 300-line page to change
+ * one thing costs minutes of output (seen: three 10k-token rewrites in one revision), and a kit session wrote its
+ * component whole four times at 10–12k output tokens each (2026-10-29). Returns the refusal, or undefined when allowed.
  */
 export function rewriteRefusal(rel: string, existing?: string): string | undefined {
-  if (!/^pages(-portrait)?\/p\w+\.js$/.test(rel.replace(/\\/g, '/')) || existing == null || existing.split('\n').length < 40) return undefined;
-  return `${rel} already has ${existing.split('\n').length} lines: to change an existing page, use edit on just what needs changing; never rewrite the whole page (a full rewrite takes minutes).`;
+  if (!EDITED_ONLY.test(rel.replace(/\\/g, '/')) || existing == null || existing.split('\n').length < REWRITE_LINES) return undefined;
+  return `${rel} already has ${existing.split('\n').length} lines: edit the parts that need changing (use edit); never rewrite the whole file with write (a full rewrite takes minutes).`;
 }

@@ -81,6 +81,12 @@ export type StudioEvent =
    *  ran, on `model` ("provider/id", the one that really took it), for whoever prices turns on their own */
   | { type: 'cost'; usage: TokenUsage; amount: number; currency: 'CNY' | 'USD'; turn?: TokenUsage; model?: string }
   | { type: 'commit'; id: string; message: string }
+  /** something a session did that it never should have to, reported as it happens (no step of the film; the call goes
+   *  ahead): `source-reading`, a kit or page session reading the engine's source (`detail`: the command or path, ≤ 200
+   *  characters; once per session), which means the reference it was handed fell short; `turn-budget`, a session that
+   *  took all the turns it may over its life, after which nothing more is sent to it and its page or component stays
+   *  as it is (`detail`: how many). A host may alert on these */
+  | { type: 'anomaly'; kind: 'source-reading' | 'turn-budget'; session: string; detail: string }
   | { type: 'error'; message: string; stage?: Stage }
   /** the film is drawn and checked: it plays in the live preview. An mp4 is made only on export (then `done`) */
   | { type: 'ready'; duration: number }

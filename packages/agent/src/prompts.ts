@@ -10,7 +10,7 @@ import type { AnswerTool } from './runtime/types.js';
 
 import { pagePack } from './pagepack.js';
 import { designedFonts } from './look.js';
-import { KIT_MAX, kitPart, kitPartCheck, type KitItem } from './kit.js';
+import { KIT_MAX, KIT_MIN_PAGES, kitPart, kitPartCheck, type KitItem } from './kit.js';
 import { brandFilesOn, brandPageNote, cornerMark, brandReviewNote, brandSection, signsOff, type BrandBrief } from './brand.js';
 import { assetPageNote, assetReviewNote, assetsSection, type UserAsset } from './assets.js';
 
@@ -136,7 +136,7 @@ export function storyboardPrompt(brief: Brief, style: string, materials: string[
 
 /** every storyboard: the things that recur, listed so they are drawn once as this film's components (the pages are drawn
  *  side by side, each by its own session: without one, the same kettle came out red on one page and blue on the next) */
-const kitPlanNote = (designed: boolean) => `Also list in \`look.kit\`${designed ? '' : ' (for this style that is all `look` holds: `"look": { "kit": [...] }`)'} the things the film draws on more than one page: its subject (the kettle, the engine, the cell), a map, a diagram, a character or its stand-in, a recurring mark. The pages are drawn at the same time, each by an artist who never sees the others, so anything not listed comes out differently on every page: another colour, another shape. Each thing listed is written once, in the film's look, as a component every page calls, so it is the same wherever it appears. At most ${KIT_MAX}, the ones that matter most:
+const kitPlanNote = (designed: boolean) => `Also list in \`look.kit\`${designed ? '' : ' (for this style that is all `look` holds: `"look": { "kit": [...] }`)'} the things the film draws on more than one page: its subject (the kettle, the engine, the cell), a map, a diagram, a character or its stand-in, a recurring mark. The pages are drawn at the same time, each by an artist who never sees the others, so anything not listed comes out differently on every page: another colour, another shape. Each thing listed is written once, in the film's look, as a component every page calls, so it is the same wherever it appears. At most ${KIT_MAX}, only things drawn on ${KIT_MIN_PAGES} or more pages, the ones that matter most (each costs as much as a page to write):
 \`"kit": [{ "name": "kettle", "what": "the electric kettle: red body, steel lid, black handle and switch; the switch can be up or down, the lid can steam", "pages": ["p01", "p02", "p05"] }]\`
 \`name\` is the component's name in camelCase (it becomes \`P.kettle(…)\`), \`what\` fixes how it looks (colours, parts) and what it must be able to show (states, parts lit, cut open), \`pages\` lists the pages it appears on. Leave out what appears on one page only, plain text, arrows and charts (the engine draws those)${designed ? '' : ', and what your style\'s own components already draw'}. A film whose pages share nothing has no \`kit\`.`;
 
@@ -247,11 +247,13 @@ export const verdictAgain = 'Answer by calling verdict, with nothing else.';
 
 // ── the film kit: this film's own components, written once before its pages (kit.ts) ──
 
-/** the kit session's system prompt: the film's look, the drawing API and the component library, and how a kit is
- *  written (the rules a style pack's kit.js follows) */
+/** the kit session's system prompt: the film's look, the drawing API, how a component is written with it (KIT.md: what
+ *  `this` is, what a call returns, time, colours), and the style's components. Without KIT.md the API was the pages'
+ *  `P.xxx` alone, and a kit session spent ~15 turns grepping engine/runtime/core.js for Builder.prototype and reading
+ *  the style's kit.js (2026-10-29) */
 /** `extras`: the style's own components, which the film's may build on (they load first) */
 export function kitSystem(style: string, extras: string[] = [], styleNotes?: string, card?: string) {
-  return [read('PAGE.md'), '---\n# This film\'s style\n\n' + grammar(style), filmCardSection(card), styleNotesSection(styleNotes), '---\n' + read('API.md'), '---\n' + pagePack(style, extras), '---\n' + read('LIB.md')].filter(Boolean).join('\n\n');
+  return [read('PAGE.md'), '---\n# This film\'s style\n\n' + grammar(style), filmCardSection(card), styleNotesSection(styleNotes), '---\n' + read('API.md'), '---\n' + read('KIT.md'), '---\n' + pagePack(style, extras), '---\n' + read('LIB.md')].filter(Boolean).join('\n\n');
 }
 
 /** what one kit session is asked: its component (`it`), among the others the storyboard lists (written at the same
@@ -276,7 +278,7 @@ ${others.length ? `\nThe film's other components, each written now by another ar
 - Take \`o.at\` for when it starts and give the pages handles to what they need to move or light later (return an object, or the group).
 - Coordinates on the 1920×1080 stage; keep it out of the subtitle band (y > 900) unless a page places it there.
 - Only \`B.${it.name}\` (helpers inside the IIFE are fine). Nothing else in the file.
-- **Short and plain**: about the size of what one page would draw for it (aim for 40–80 lines), drawn the way a page draws, not modelled. Fix what must match across pages (shape, proportions, colours, parts) and the states the pages need; leave the rest to the pages. The pages are waiting for this file: write it in one go, without exploring the project first (the style's components are listed above, already loaded).
+- **Short and plain**: about the size of what one page would draw for it (aim for 40–80 lines), drawn the way a page draws, not modelled. Fix what must match across pages (shape, proportions, colours, parts) and the states the pages need; leave the rest to the pages. The pages are waiting for this file: write it in one go, without exploring the project first (the style's components are listed above, already loaded). Once written, the file is changed with edit: writing it whole again is refused.
 
 ## Write ${check}
 The lines that draw your component once on the check page, which shows every component of the film side by side: plain statements using \`P\` (no \`ENGINE.visual\` around them), e.g. \`P.${it.name}(…, { at: P.c(${cell.i}) });\`. It starts at \`P.c(${cell.i})\` (about 2.6 seconds before the next component's turn) and stays inside x ${cell.x}–${cell.x + cell.w}, y ${cell.y}–${cell.y + cell.h}; use the options the pages will use. A reviewer looks at it in pictures.
@@ -333,11 +335,12 @@ Make the change in ${kitPart(name)} with edit. **Keep its name, arguments and op
 }
 
 /** what the kit session is asked to fix after its check */
-export function kitFixPrompt(name: string, round: number, problems: { name?: string; what: string; fix: string }[], crash?: string) {
+/** `yours`: the crash was raised in this session's own files (kit.ts kitLocate), so it is sent to it alone */
+export function kitFixPrompt(name: string, round: number, problems: { name?: string; what: string; fix: string }[], crash?: string, yours = false) {
   return `Check round ${round}: the components need changes.
-${crash ? `\nThe check page throws when it runs, so nothing could be looked at:\n${crash}\n` : ''}${problems.map((p) => `- ${p.name ? `${p.name}: ` : ''}${p.what} → ${p.fix}`).join('\n')}
+${crash ? `\nThe check page throws when it runs, so nothing could be looked at${yours ? `; the error is raised in your ${kitPart(name)} or ${kitPartCheck(name)}` : ''}:\n${crash}\n` : ''}${problems.map((p) => `- ${p.name ? `${p.name}: ` : ''}${p.what} → ${p.fix}`).join('\n')}
 
-${problems.some((p) => p.name === name) ? '' : 'They may not be yours: the check runs every component together. Change your files only for what is yours; if nothing is, say so and stop.\n'}Fix them with edit in ${kitPart(name)} (and ${kitPartCheck(name)} if your lines on the check page are wrong). **Put all the edits in one reply**, each with finish: true: the round ends once they apply, and the components are checked again.`;
+${yours || problems.some((p) => p.name === name) ? '' : 'They may not be yours: the check runs every component together. Change your files only for what is yours; if nothing is, say so and stop.\n'}Fix them with edit in ${kitPart(name)} (and ${kitPartCheck(name)} if your lines on the check page are wrong). **Put all the edits in one reply**, each with finish: true: the round ends once they apply, and the components are checked again.`;
 }
 
 /** the page reviewer: the film's own components, so a page that drew one of them again is caught */

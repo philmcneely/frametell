@@ -6,7 +6,8 @@ import path from 'node:path';
 import { narrate, type TtsProvider } from '@frametell/voice';
 import { Project, childCmd, projectFiles, type LintIssue, type LintKind, type PageTiming, type Storyboard, type Renderer } from './project.js';
 import { FLAG, KIT_CHANGE, ROUTE, VERDICT, fixPrompt, laneNote, kitChangeAsk, kitChangePrompt, kitChangeSystem, kitFixPrompt, kitPrompt, kitReviewNote, kitReviewerPrompt, kitSystem, langNote, voiceNote, pagePrompt, pageSystem, plannerSystem, replyNote, reviewPrompt, reviewerPrompt, reviewerSystem, routeAsk, routeSystem, scriptPrompt, storyboardFixPrompt, storyboardPrompt, verdictAgain, type Brief, type CreditFacts, type FilmFacts, type Problem } from './prompts.js';
-import { KIT_CHECK_FILE, KIT_FILE, KIT_KEPT, kitCell, kitCheckPage, kitIssues, kitPart, kitPartCheck, kitPlan, kitStage, kitTimes, kitWanted, type KitItem } from './kit.js';
+import { KIT_CHECK_FILE, KIT_FILE, KIT_KEPT, kitCell, kitCheckPage, kitIssues, kitLocate, kitPart, kitPartCheck, kitPlan, kitStage, kitTimes, kitWanted, type KitItem, type KitPart } from './kit.js';
+import { drawingSession, sourceReading } from './anomaly.js';
 import { addUsage, emptyUsage, type AgentRuntime, type AgentSession, type SessionOptions, type Thinking, type TokenUsage, type TurnResult } from './runtime/types.js';
 import type { PageIssue, PageStatus, Stage, StudioEvent } from './events.js';
 import { designedFonts, designedIssues, designedLook, type Look } from './look.js';
@@ -152,7 +153,7 @@ const styleWebgl = (style: string): boolean => {
 export function crashText(raw: string, id: string): string {
   const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean);
   const err = lines.find((l) => /(Error|error):/.test(l) && !/^node:internal/.test(l))?.replace(/^page\.evaluate:\s*/, '') ?? lines[0] ?? raw;
-  const at = lines.filter((l) => l.includes(`pages/${id}.js`) || /engine\/(runtime|lib)\//.test(l)).map((l) => l.replace(/^.*?((pages|engine)\/[^\s)]+).*$/, '$1')).slice(0, 4);
+  const at = lines.filter((l) => l.includes(`pages/${id}.js`) || /engine\/(runtime|lib)\/|extras\/[\w./-]+\.js:\d/.test(l)).map((l) => l.replace(/^.*?((pages|engine|extras)\/[^\s)]+).*$/, '$1')).slice(0, 4);
   return [err.replace(/ at file:\/\/\S+/, ''), ...at.map((a) => `  at ${a}`)].join('\n').slice(0, 800);
 }
 
@@ -220,6 +221,9 @@ export function lanesOf<T>(items: T[], n: number): T[][] {
   const size = Math.ceil(items.length / Math.max(1, n));
   return Array.from({ length: Math.ceil(items.length / size) }, (_, i) => items.slice(i * size, (i + 1) * size));
 }
+/** a session's turns over its whole life against what it may take (Director.allow; Infinity: no budget), and whether
+ *  running out was said */
+interface Budget { name: string; used: number; limit: number; said?: boolean }
 /** a lane: its session (opened with its first page), the page it is on, and whether it has drawn one already.
  *  `again`: a lane of a run that stopped, going on in its own transcript (its next message says so, once) */
 interface Lane { name: string; resume?: string; s?: AgentSession; cur: string; drawn: boolean; again?: boolean }
@@ -267,7 +271,10 @@ const PICTURES_AT_ONCE = 10;
  *  check), so pages of ~20 s cost less than pages of ~13 s for the same film. */
 export const PAGES_PER_MINUTE = 4;
 export const lengthBudget = (durationSec: number) => ({ pages: Math.ceil((durationSec / 60) * PAGES_PER_MINUTE) + 1, estimateSec: Math.round(durationSec * 4 / 3), leastSec: durationSec });
-const MAX = { pageLintMs: 90_000, pagesAtOnce: 10, storyboardFix: 2, scriptFix: 2, planTurns: 30, pageTurns: 40, reviewerTurns: 3, pageChecks: 3, kitChecks: 3, kitTurns: 30, revisionChecks: 2, brokenChecks: 2, reviewRounds: 2, reviewDefectsMs: 180_000 };
+// pageTurns / kitTurns cap one exchange (a send) of a session; pageBudget / kitBudget the whole session (Director.allow):
+// a kit session took 46 turns over its exchanges, its context past 150k tokens a turn (2026-10-29). A lane's budget
+// grows by pageBudget with each page it takes; a kit session's is kitBudget, whatever it holds.
+const MAX = { pageLintMs: 90_000, pagesAtOnce: 10, storyboardFix: 2, scriptFix: 2, planTurns: 30, pageTurns: 40, pageBudget: 40, reviewerTurns: 3, pageChecks: 3, kitChecks: 3, kitTurns: 16, kitBudget: 24, revisionChecks: 2, brokenChecks: 2, reviewRounds: 2, reviewDefectsMs: 180_000 };
 /** the reviewer looks at one sheet and answers: little thinking, quickly */
 const REVIEWER_THINKING: Thinking = 'low';
 /** what breaks a film whatever it looks like: the whole-film check's 'defects' mode takes only these */
@@ -457,11 +464,32 @@ export class Director {
     // a reviewer's words are for the page agent, not the people watching: only its turns go out, to be counted (the
     // router's too: its reply goes out as a note, from the runner)
     const shown = !name.startsWith('check-') && name !== ROUTE_SESSION;
-    return runtime.open({ name, system, cwd: this.o.dir, maxTurns, signal, ...tools, onEvent: (event) => {
+    // its turns over its whole life (held to a budget once allow() gives it one), and whether it was seen reading the
+    // engine's source (reported once)
+    const budget: Budget = { name, used: 0, limit: Infinity };
+    let read = false;
+    const s = await runtime.open({ name, system, cwd: this.o.dir, maxTurns, signal, ...tools, onEvent: (event) => {
+      // a call's path or command is for the director alone: the event goes on without it
+      if (event.type === 'tool_start' && event.input) {
+        const { input, ...rest } = event;
+        if (!read && drawingSession(name)) {
+          const detail = sourceReading(event.name, input, this.o.dir);
+          if (detail) { read = true; this.emit({ type: 'anomaly', kind: 'source-reading', session: shownAs?.() ?? name, detail }); }
+        }
+        event = rest;
+      }
       // a lane's session speaks for the page it is on, so the panel shows each page's work on that page
       if (shown || event.type === 'turn') this.emit({ type: 'agent', session: shownAs?.() ?? name, event });
-      if (event.type === 'turn') { this.countTurn(event.usage, prices, runtime.model); if (name.startsWith('page-')) this.firstTurn?.(); this.afterTurn?.(name); }
+      if (event.type === 'turn') { budget.used++; this.countTurn(event.usage, prices, runtime.model); if (name.startsWith('page-')) this.firstTurn?.(); this.afterTurn?.(name); }
     } }, resume);
+    this.budgets.set(s, budget);
+    return s;
+  }
+  /** `turns` more for session `s` over its life: until it is given some, a session is held only to its maxTurns per
+   *  exchange; once given, every exchange gets what is left, and a session with none left is sent nothing more */
+  private allow(s: AgentSession, turns: number) {
+    const b = this.budgets.get(s);
+    if (b) b.limit = (b.limit === Infinity ? 0 : b.limit) + turns;
   }
   /** called after each model turn of any session, with its name (the storyboard keeps its draft as it goes) */
   private afterTurn?: (session: string) => void;
@@ -478,10 +506,21 @@ export class Director {
   /** a saved transcript there is to carry on: a file on disk, or a ref of a runtime that keeps its own */
   private resumable(ref: string | undefined): ref is string { return !!ref && (!path.isAbsolute(ref) || fs.existsSync(ref)); }
   private async send(s: AgentSession, text: string, images?: string[], thinking?: Thinking) {
-    const r = await s.send({ text, images, thinking });
+    const b = this.budgets.get(s);
+    const left = b && b.limit !== Infinity ? b.limit - b.used : undefined;
+    // spent: the exchange ends as one that ran out of turns would, so its page or component is left as it is
+    if (left !== undefined && left <= 0) return this.spent(s, b!);
+    const r = await s.send({ text, images, thinking, ...(left !== undefined ? { maxTurns: left } : {}) });
     if (r.stopReason === 'aborted') throw new DOMException('aborted', 'AbortError');
     if (r.error) this.lastError.set(s, r.error);
+    if (b && b.used >= b.limit) this.spent(s, b);
     return r;
+  }
+  /** a session that took its whole budget: said once, and every later exchange is answered as out of turns */
+  private spent(s: AgentSession, b: Budget): TurnResult {
+    const error = `this session has taken all ${b.limit} turns it may`;
+    if (!b.said) { b.said = true; this.lastError.set(s, error); this.emit({ type: 'anomaly', kind: 'turn-budget', session: b.name, detail: `${b.used} turns of ${b.limit}` }); }
+    return { ok: false, text: '', turns: 0, usage: emptyUsage(), error, stopReason: 'max_turns', answers: [] };
   }
   private fail(stage: Stage, message: string): never {
     this.emit({ type: 'stage', stage, status: 'failed', detail: message });
@@ -648,7 +687,7 @@ export class Director {
     let ids: string[] = [];
     try { ids = this.project.storyboard().pages.map((p) => p.id); } catch {}
     const pictures = this.pictureStyle();
-    return [...(fonts ? designedIssues(look, fonts) : []), ...kitIssues(look, ids), ...(pictures ? pictureIssues(look, ids, pictures, this.own()) : [])].map((msg) => ({ level: 'red' as const, msg }));
+    return [...(fonts ? designedIssues(look, fonts) : []), ...kitIssues(look, ids, this.o.style), ...(pictures ? pictureIssues(look, ids, pictures, this.own()) : [])].map((msg) => ({ level: 'red' as const, msg }));
   }
 
   /** a designed style's film: the look the director wrote in storyboard.json (its card and what it comes to) */
@@ -690,7 +729,7 @@ export class Director {
   /** the components this film's pages get, as the storyboard listed them */
   private kitItems(): KitItem[] {
     if (this.state.kit?.status !== 'done') return [];
-    try { return kitPlan(this.project.storyboard().look).filter((x) => this.state.kit!.components.includes(x.name)); } catch { return []; }
+    try { return kitPlan(this.project.storyboard().look, this.o.style).filter((x) => this.state.kit!.components.includes(x.name)); } catch { return []; }
   }
   /** the kit file the pages are shown, when this film has one */
   private filmKit() { return this.state.kit?.status === 'done' ? this.project.file(KIT_FILE) : undefined; }
@@ -727,7 +766,7 @@ export class Director {
     if (this.state.kit) return;
     const sb = this.project.storyboard();
     const designed = this.designed();
-    const items = kitPlan(sb.look);
+    const items = kitPlan(sb.look, this.o.style);
     // a film drawn in one lane needs none: one session draws every page and sees what it drew; nor does a film drawn in
     // pictures (its pages only draw its pictures in)
     if (!kitWanted(sb.pages.length, items) || (this.lanesOn() && laneCount(sb.pages.length) === 1) || this.pictureStyle()?.led) { this.state.kit = { status: 'none', components: [] }; this.save(); return; }
@@ -739,10 +778,12 @@ export class Director {
     let passed: string[] = [], sheet: string | undefined;
     const written = (x: KitItem) => this.project.exists(kitPart(x.name)) && this.project.exists(kitPartCheck(x.name));
     const files = () => items.map((x) => (written(x) ? this.project.read(kitPart(x.name)) + this.project.read(kitPartCheck(x.name)) : '')).join('\0');
-    // the kit and its check page, from the components that were written
-    const assemble = (ready: KitItem[]) => {
-      this.project.write(KIT_FILE, ready.map((x) => this.project.read(kitPart(x.name)).trim()).join('\n\n') + '\n');
-      this.project.write(KIT_CHECK_FILE, kitCheckPage(ready.map((x) => this.project.read(kitPartCheck(x.name)))));
+    // the kit and its check page, from the components that were written; → the parts, to tell where an error is
+    const assemble = (ready: KitItem[]): KitPart[] => {
+      const parts = ready.map((x) => ({ name: x.name, code: this.project.read(kitPart(x.name)), check: this.project.read(kitPartCheck(x.name)) }));
+      this.project.write(KIT_FILE, parts.map((p) => p.code.trim()).join('\n\n') + '\n');
+      this.project.write(KIT_CHECK_FILE, kitCheckPage(parts.map((p) => p.check)));
+      return parts;
     };
     try {
       const system = kitSystem(this.o.style, styleExtras(this.o.style), this.o.brief.styleNotes, designed?.card);
@@ -751,7 +792,7 @@ export class Director {
         for (const [k, it] of group.entries()) {
           const i = items.indexOf(it);
           try {
-            s ??= await this.session(`kit-${it.name}`, system, MAX.kitTurns);
+            if (!s) { s = await this.session(`kit-${it.name}`, system, MAX.kitTurns); this.allow(s, MAX.kitBudget); }
             sessions.set(it.name, s);
             const next = k ? `Next, another of this film's components, in the same session: ${group.slice(0, k).map((x) => `\`P.${x.name}\``).join(', ')} ${k > 1 ? 'are' : 'is'} yours and written.\n\n` : '';
             const r = await this.send(s, next + kitPrompt(sb, items, it, kitCell(i, items.length), this.o.brief.lang, this.o.brief.replyLang), undefined, KIT_THINKING);
@@ -764,15 +805,21 @@ export class Director {
       let ready = items.filter(written);
       if (!ready.length) throw new Error('the components were not written');
       for (let round = 1; round <= MAX.kitChecks; round++) {
-        assemble(ready);
+        const parts = assemble(ready);
         this.emit({ type: 'kit', status: 'checking', round });
         const { page, times, check: c } = await this.checkKit(ready, this.o.look ?? designed?.look, round);
         // which component a moment shows: the one whose cue it falls in
         const at = (t: number) => ready[Math.max(0, page.cues.filter((q) => q.abs <= t + page.start + 0.01).length - 1)]?.name;
-        let problems: { name?: string; what: string; fix: string }[] = [], crash: string | undefined;
-        // a kit that throws, or calls what the engine does not have, draws nothing at all: every component fails
+        let problems: { name?: string; what: string; fix: string }[] = [], crash: string | undefined, culprit: string | undefined;
+        // a kit that throws, or calls what the engine does not have, draws nothing at all: every component fails. The
+        // error goes to the session whose file it is raised in, its frames named as that file's lines; to all of them
+        // only when nothing says whose it is
         const broken = c.issues.filter((i) => BROKEN.includes(i.kind));
-        if (c.crash !== undefined || broken.length) { crash = c.crash !== undefined ? crashText(c.crash, 'kit') : broken.map((i) => i.msg).join('\n'); passed = []; }
+        if (c.crash !== undefined || broken.length) {
+          const where = kitLocate(c.crash ?? broken.map((i) => i.msg).join('\n'), parts);
+          crash = c.crash !== undefined ? crashText(where.text, 'kit') : where.text;
+          culprit = where.owner; passed = [];
+        }
         else {
           sheet = c.sheet;
           // the sheet is kept with the film's, so the panel can show it
@@ -788,17 +835,19 @@ export class Director {
           if (!problems.length) break;
         }
         if (round === MAX.kitChecks) break;
-        // each component's session fixes its own problems, all at once; a crash, or a problem that names none, goes to all
+        // each component's session fixes its own problems, all at once; a crash goes to the one it is raised in (to all
+        // when nothing says whose), a problem that names none to all; a session with nothing of its own is not woken
         const before = files();
         const mine = (n: string) => problems.filter((p) => p.name === n || p.name === undefined);
+        const crashFor = (n: string) => crash !== undefined && (culprit === undefined || culprit === n);
         // a session that holds two components fixes them one after the other
         const owed = new Map<AgentSession, KitItem[]>();
         for (const x of ready) {
           const s = sessions.get(x.name);
-          if (s && (crash || mine(x.name).length)) owed.set(s, [...(owed.get(s) ?? []), x]);
+          if (s && (crashFor(x.name) || mine(x.name).length)) owed.set(s, [...(owed.get(s) ?? []), x]);
         }
         await Promise.all([...owed].map(async ([s, xs]) => {
-          for (const x of xs) await this.send(s, kitFixPrompt(x.name, round, mine(x.name), crash), sheet ? [sheet] : undefined, KIT_THINKING);
+          for (const x of xs) await this.send(s, kitFixPrompt(x.name, round, mine(x.name), crashFor(x.name) ? crash : undefined, culprit === x.name), sheet ? [sheet] : undefined, KIT_THINKING);
         }));
         if (files() === before) break;
         ready = items.filter(written);
@@ -1183,17 +1232,23 @@ export class Director {
       const system = kitSystem(this.o.style, styleExtras(this.o.style), this.o.brief.styleNotes, designed?.card);
       await Promise.all(names.map(async (n) => {
         const s = await this.session(`kit-${n}`, system, MAX.kitTurns);
+        this.allow(s, MAX.kitBudget);
         sessions.set(n, s);
         await this.send(s, kitChangePrompt(n, change, was.get(n)![0], was.get(n)![1]) + this.unseen(`kit-${n}`), undefined, KIT_THINKING);
       }));
       for (let round = 1; round <= 2; round++) {
-        this.project.write(KIT_FILE, items.map((x) => this.project.read(kitPart(x.name)).trim()).join('\n\n') + '\n');
-        this.project.write(KIT_CHECK_FILE, kitCheckPage(items.map((x) => this.project.read(kitPartCheck(x.name)))));
+        const parts = items.map((x) => ({ name: x.name, code: this.project.read(kitPart(x.name)), check: this.project.read(kitPartCheck(x.name)) }));
+        this.project.write(KIT_FILE, parts.map((p) => p.code.trim()).join('\n\n') + '\n');
+        this.project.write(KIT_CHECK_FILE, kitCheckPage(parts.map((p) => p.check)));
         this.emit({ type: 'kit', status: 'checking', round });
         const { page, times, check: c } = await this.checkKit(items, this.o.look ?? designed?.look, round + 10);
         const broken = c.issues.filter((i) => BROKEN.includes(i.kind));
         let problems: { name?: string; what: string; fix: string }[];
-        if (c.crash !== undefined || broken.length) problems = [{ what: c.crash !== undefined ? crashText(c.crash, 'kit') : broken.map((i) => i.msg).join('\n'), fix: 'fix the error' }];
+        // an error goes to the component it is raised in (kitLocate), to every one changed when nothing says whose
+        if (c.crash !== undefined || broken.length) {
+          const where = kitLocate(c.crash ?? broken.map((i) => i.msg).join('\n'), parts);
+          problems = [{ name: where.owner, what: c.crash !== undefined ? crashText(where.text, 'kit') : where.text, fix: 'fix the error' }];
+        }
         else {
           sheet = c.sheet;
           try { fs.copyFileSync(c.sheet, this.project.file(`out/snap/kit-change-r${round}.jpg`)); sheet = this.project.file(`out/snap/kit-change-r${round}.jpg`); } catch {}
@@ -1206,7 +1261,8 @@ export class Director {
         if (!problems.length) { ok = true; break; }
         why = problems.map((p) => p.what).join('; ');
         if (round === 2) break;
-        await Promise.all(names.map((n) => this.send(sessions.get(n)!, kitFixPrompt(n, round, problems.filter((p) => !p.name || p.name === n), undefined), sheet ? [sheet] : undefined, KIT_THINKING)));
+        // a session with no problem of its own is not woken
+        await Promise.all(names.filter((n) => problems.some((p) => !p.name || p.name === n)).map((n) => this.send(sessions.get(n)!, kitFixPrompt(n, round, problems.filter((p) => !p.name || p.name === n), undefined), sheet ? [sheet] : undefined, KIT_THINKING)));
       }
     } catch (e) {
       if (stopped(e)) { undo(); throw e; }
@@ -1431,6 +1487,8 @@ export class Director {
       if (lane) { lane.cur = `page-${id}`; s = lane.s ??= await this.session(lane.name, system, MAX.pageTurns, lane.resume, undefined, { answers: [FLAG] }, () => lane.cur); }
       // a page picked up in its checks resumes its conversation; a lane's is shared, so it goes on in a copy
       else s = await this.session(`page-${id}`, system, MAX.pageTurns, was?.ref && this.lanesOn() ? this.fork(was.ref, `page-${id}`) : was?.ref, undefined, { answers: [FLAG] });
+      // its turns over its life: a page's worth more for each page it takes (a lane's grows as it goes)
+      this.allow(s, MAX.pageBudget);
       // in a lane the session has drawn pages before this one: it says which page it is on now in every message
       const next = (lane?.again ? laneResumed(id, this.project.exists(`pages/${id}.js`)) : '') + (lane?.drawn ? laneNote(id) : '');
       if (lane) lane.again = false;
@@ -1759,6 +1817,8 @@ export class Director {
   private drewAll?: string;
   /** each session's last error from its model service */
   private lastError = new WeakMap<AgentSession, string>();
+  /** each session's turns over its life, and its budget (allow) */
+  private budgets = new WeakMap<AgentSession, Budget>();
 
   /**
    * The planner's half of a revision: which pages, and what to change on each (written to .studio/revision.json). A

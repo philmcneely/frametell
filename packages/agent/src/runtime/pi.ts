@@ -7,7 +7,7 @@ import type { Api, Model, MutableModels } from '@earendil-works/pi-ai';
 import { fileTools } from '../tools/files.js';
 import { imagesIn } from '../projectfs.js';
 import { answerTools } from '../tools/answers.js';
-import { addUsage, emptyUsage, toolSummary, type Answer, type AgentRuntime, type AgentSession, type SessionOptions, type StageInput, type Thinking, type TurnResult } from './types.js';
+import { addUsage, emptyUsage, toolInput, toolSummary, type Answer, type AgentRuntime, type AgentSession, type SessionOptions, type StageInput, type Thinking, type TurnResult } from './types.js';
 
 const mimeOf = (f: string) => (/\.png$/i.test(f) ? 'image/png' : /\.webp$/i.test(f) ? 'image/webp' : 'image/jpeg');
 const short = toolSummary;
@@ -57,7 +57,7 @@ export function piRuntime(models: MutableModels, model: Model<Api>, opts: { thin
         toolExecution: 'sequential',
       });
       const ref = resume || path.join(o.cwd, '.studio', 'sessions', `${o.name}.json`);
-      let turns = 0, usage = emptyUsage(), lastText = '', stop: TurnResult['stopReason'] = 'done';
+      let turns = 0, usage = emptyUsage(), lastText = '', stop: TurnResult['stopReason'] = 'done', cap = o.maxTurns;
       // the response as it streams: one progress event a second at most, so a long write is visible while it is written
       let lastProgress = 0;
       const progress = (ev: any) => {
@@ -86,7 +86,7 @@ export function piRuntime(models: MutableModels, model: Model<Api>, opts: { thin
           save();
           const u = (e.message as any)?.usage;
           if (u) { usage = addUsage(usage, u); o.onEvent?.({ type: 'turn', usage: { input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite } }); }
-          if (turns >= o.maxTurns) { stop = 'max_turns'; agent.abort(); }
+          if (turns >= cap) { stop = 'max_turns'; agent.abort(); }
         } else if (e.type === 'message_end' && (e.message as any).role === 'assistant') {
           const blocks = ((e.message as any).content || []) as any[];
           const t = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('').trim();
@@ -94,7 +94,7 @@ export function piRuntime(models: MutableModels, model: Model<Api>, opts: { thin
           const th = blocks.filter((b) => b.type === 'thinking').map((b) => b.thinking).join('').trim();
           if (th) o.onEvent?.({ type: 'thinking', text: th });
         } else if (e.type === 'tool_execution_start') {
-          o.onEvent?.({ type: 'tool_start', id: e.toolCallId, name: e.toolName, summary: short(e.args) });
+          o.onEvent?.({ type: 'tool_start', id: e.toolCallId, name: e.toolName, summary: short(e.args), input: toolInput(e.args) });
         } else if (e.type === 'tool_execution_end') {
           o.onEvent?.({ type: 'tool_end', id: e.toolCallId, name: e.toolName, ok: !(e as any).isError });
         }
@@ -106,7 +106,7 @@ export function piRuntime(models: MutableModels, model: Model<Api>, opts: { thin
       return {
         ref,
         async send(input: StageInput): Promise<TurnResult> {
-          turns = 0; usage = emptyUsage(); lastText = ''; stop = 'done'; answers = [];
+          turns = 0; usage = emptyUsage(); lastText = ''; stop = 'done'; answers = []; cap = Math.max(1, Math.min(o.maxTurns, input.maxTurns ?? o.maxTurns));
           if (o.signal?.aborted) return { ok: false, text: '', turns, usage, error: 'aborted', stopReason: 'aborted', answers };
           o.signal?.addEventListener('abort', onAbort, { once: true });
           const l = levelled(input.thinking);

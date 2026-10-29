@@ -6,7 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { imagesIn } from '../projectfs.js';
-import { addUsage, emptyUsage, rewriteRefusal, toolSummary, proxyEnv, type AgentRuntime, type AgentSession, type SessionOptions, type StageInput, type TurnResult } from './types.js';
+import { addUsage, emptyUsage, rewriteRefusal, toolInput, toolSummary, proxyEnv, type AgentRuntime, type AgentSession, type SessionOptions, type StageInput, type TurnResult } from './types.js';
 
 export interface ClaudeRuntimeOptions {
   apiKey: string;
@@ -54,7 +54,7 @@ export function claudeRuntime(o: ClaudeRuntimeOptions): AgentRuntime {
               cwd: s.cwd, model: o.model, effort: o.effort ?? 'medium', thinking: { type: 'adaptive', display: 'summarized' },
               systemPrompt: s.system, settingSources: [], permissionMode: 'bypassPermissions', allowDangerouslySkipPermissions: true,
               allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'], disallowedTools: ['WebFetch', 'WebSearch', 'Task', 'Agent'],
-              maxTurns: s.maxTurns, env, abortController: abort, ...(sessionId ? { resume: sessionId } : {}),
+              maxTurns: Math.max(1, Math.min(s.maxTurns, input.maxTurns ?? s.maxTurns)), env, abortController: abort, ...(sessionId ? { resume: sessionId } : {}),
               hooks: {
                 PreToolUse: [{ hooks: [async (h: any) => {
                   const ti = h.tool_input || {};
@@ -77,7 +77,7 @@ export function claudeRuntime(o: ClaudeRuntimeOptions): AgentRuntime {
                 for (const b of m.message.content) {
                   if (b.type === 'text' && b.text.trim()) { text = b.text.trim(); s.onEvent?.({ type: 'text', text }); }
                   else if (b.type === 'thinking' && b.thinking) s.onEvent?.({ type: 'thinking', text: b.thinking });
-                  else if (b.type === 'tool_use') s.onEvent?.({ type: 'tool_start', id: b.id, name: b.name, summary: short(b.input) });
+                  else if (b.type === 'tool_use') s.onEvent?.({ type: 'tool_start', id: b.id, name: b.name, summary: short(b.input), input: toolInput(b.input) });
                 }
                 const u = m.message.usage;
                 if (u) { const t = { input: u.input_tokens || 0, output: u.output_tokens || 0, cacheRead: u.cache_read_input_tokens || 0, cacheWrite: u.cache_creation_input_tokens || 0 }; usage = addUsage(usage, t); s.onEvent?.({ type: 'turn', usage: t }); }

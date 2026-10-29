@@ -13,7 +13,9 @@ export interface KitItem { name: string; what: string; pages: string[] }
 
 /** a thing on fewer pages than this is drawn by its page: it has nothing to match */
 export const KIT_MIN_PAGES = 2;
-export const KIT_MAX = 8;
+/** a few components, the ones that matter most: of the 7 one film planned (2026-10-29, at most 8 then), 2 were dropped
+ *  after their sessions had cost what the rest did, and 4 sessions writing them were $6.8 of a $40 film */
+export const KIT_MAX = 3;
 /** the components, where the pages load them from (META.extras) */
 export const KIT_FILE = 'extras/film-kit.js';
 /** the page that calls every component once, written with them: the kit's check draws it */
@@ -56,11 +58,19 @@ export function reservedNames(): Set<string> {
   return (reserved = names);
 }
 
-/** the kit the storyboard asks for, as far as it is well formed */
-export function kitPlan(look: unknown): KitItem[] {
+/** the style's own components (its kit.js, loaded before the film's): a film component of the same name replaces it on
+ *  every page, and its session wrote the style's presenter again from nothing (2026-10-29: `presenter` in midcentury,
+ *  four whole rewrites after reading the style's source for it) */
+export function styleNames(style?: string): Set<string> {
+  if (!style) return new Set();
+  try { return new Set(componentNames(fs.readFileSync(path.join(ENGINE_DIR, 'styles', style, 'kit.js'), 'utf8'))); } catch { return new Set(); }
+}
+
+/** the kit the storyboard asks for, as far as it is well formed: at most KIT_MAX, each on KIT_MIN_PAGES pages or more */
+export function kitPlan(look: unknown, style?: string): KitItem[] {
   const list = look && typeof look === 'object' ? (look as Record<string, unknown>).kit : undefined;
   if (!Array.isArray(list)) return [];
-  const seen = new Set<string>();
+  const seen = new Set<string>(), own = styleNames(style);
   const out: KitItem[] = [];
   for (const x of list) {
     if (!x || typeof x !== 'object') continue;
@@ -68,7 +78,7 @@ export function kitPlan(look: unknown): KitItem[] {
     const name = typeof o.name === 'string' ? o.name.trim() : '';
     const what = typeof o.what === 'string' ? o.what.trim().slice(0, 300) : '';
     const pages = Array.isArray(o.pages) ? o.pages.filter((p): p is string => typeof p === 'string') : [];
-    if (!NAME.test(name) || seen.has(name) || reservedNames().has(name) || !what) continue;
+    if (!NAME.test(name) || seen.has(name) || reservedNames().has(name) || own.has(name) || !what || pages.length < KIT_MIN_PAGES) continue;
     seen.add(name);
     out.push({ name, what, pages });
     if (out.length === KIT_MAX) break;
@@ -77,12 +87,12 @@ export function kitPlan(look: unknown): KitItem[] {
 }
 
 /** what is wrong with `look.kit`, for the storyboard check (nothing when there is none: a kit is optional) */
-export function kitIssues(look: unknown, pageIds: string[]): string[] {
+export function kitIssues(look: unknown, pageIds: string[], style?: string): string[] {
   const list = look && typeof look === 'object' ? (look as Record<string, unknown>).kit : undefined;
   if (list === undefined) return [];
   if (!Array.isArray(list)) return ['`look.kit` must be a list of { name, what, pages }'];
   const out: string[] = [];
-  const ids = new Set(pageIds), seen = new Set<string>();
+  const ids = new Set(pageIds), seen = new Set<string>(), own = styleNames(style);
   if (list.length > KIT_MAX) out.push(`\`look.kit\` lists ${list.length} components: keep the ${KIT_MAX} that recur most`);
   for (const x of list) {
     const o = (x && typeof x === 'object' ? x : {}) as Record<string, unknown>;
@@ -91,6 +101,7 @@ export function kitIssues(look: unknown, pageIds: string[]): string[] {
     if (seen.has(name)) out.push(`\`look.kit\`: ${name} is listed twice`);
     seen.add(name);
     if (reservedNames().has(name)) out.push(`\`look.kit\`: ${name} is already one of the engine's P.${name}: name the component after what it draws in this film`);
+    else if (own.has(name)) out.push(`\`look.kit\`: ${name} is already the style's own P.${name}, which every page can call with its options: leave it out, or, for this film's own version of it (its colours, its parts), name it after what it is in this film`);
     if (typeof o.what !== 'string' || !o.what.trim()) out.push(`\`look.kit\`: ${name} needs \`what\`: what it draws, in the look's words`);
     const pages = Array.isArray(o.pages) ? o.pages : [];
     const unknown = pages.filter((p) => typeof p !== 'string' || !ids.has(p));
@@ -164,4 +175,41 @@ export function kitTimes(cues: { abs: number }[], end: number): number[] {
   const at = cues.map((c, i) => (i + 1 < cues.length ? cues[i + 1].abs - 0.3 : end - 1.2));
   while (at.length > 6) at.splice(Math.floor(at.length / 2) - 1, 1);
   return at;
+}
+
+/** one component as its session wrote it: its code and its lines on the check page */
+export interface KitPart { name: string; code: string; check: string }
+
+/** the line each part starts on (1-based) in the kit and in the check page, as KIT_FILE and kitCheckPage put them
+ *  together: the kit is the parts' code joined by a blank line; the check page opens with ENGINE.visual and wraps each
+ *  part's lines in `{` … `}` */
+function partLines(parts: KitPart[]) {
+  const n = (s: string) => s.trim().split('\n').length;
+  let k = 1, c = 2;
+  return parts.map((p) => {
+    const at = { name: p.name, kit: [k, k + n(p.code) - 1], check: [c + 1, c + n(p.check)] };
+    k += n(p.code) + 1; c += n(p.check) + 2;
+    return at;
+  });
+}
+
+/**
+ * Where an error of the kit's check was raised, by the frames it names: the put-together kit (extras/film-kit.js:LINE)
+ * and check page (pages/kit.js:LINE) are mapped back to the part each line came from, and a part's own file
+ * (extras/kit/<name>.js) names it directly. → the part the first such frame is in (none: nothing says, and every
+ * session is told), and the text with those frames as the part's own file and line, which its session can open. A
+ * crash in one session's file was sent to all three (2026-10-29), and each answered "not mine" at 150k tokens a turn.
+ */
+export function kitLocate(text: string, parts: KitPart[]): { owner?: string; text: string } {
+  const at = partLines(parts), names = new Set(parts.map((p) => p.name));
+  let owner: string | undefined;
+  const out = text.replace(/extras\/film-kit\.js:(\d+)|pages\/kit\.js:(\d+)|extras\/kit\/(\w+?)(?:\.check)?\.js/g, (m, kl: string | undefined, cl: string | undefined, own: string | undefined) => {
+    if (own) { if (names.has(own)) owner ??= own; return m; }
+    const line = Number(kl ?? cl), key = kl ? 'kit' : 'check';
+    const p = at.find((x) => line >= x[key][0] && line <= x[key][1]);
+    if (!p) return m;
+    owner ??= p.name;
+    return `${key === 'kit' ? kitPart(p.name) : kitPartCheck(p.name)}:${line - p[key][0] + 1}`;
+  });
+  return { owner, text: out };
 }

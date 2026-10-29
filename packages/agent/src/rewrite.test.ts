@@ -16,6 +16,14 @@ test('an existing page is never rewritten whole; new pages and other files are w
   assert.equal(rewriteRefusal('.studio/revision.json', long), undefined);
 });
 
+test("a film component that exists is changed with edit too; its check lines and a short one are rewritten freely", () => {
+  assert.match(rewriteRefusal('extras/kit/presenter.js', long)!, /edit the parts that need changing/);
+  assert.equal(rewriteRefusal('extras/kit/presenter.js', undefined), undefined);
+  assert.equal(rewriteRefusal('extras/kit/presenter.js', Array.from({ length: 39 }, () => 'x').join('\n')), undefined);
+  assert.equal(rewriteRefusal('extras/kit/presenter.check.js', long), undefined);
+  assert.equal(rewriteRefusal('extras/film-kit.js', long), undefined);   // the director's to write (and frozen once checked)
+});
+
 test('the write tool refuses, and edit still works', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-tools-'));
   fs.mkdirSync(path.join(dir, 'pages'));
@@ -25,6 +33,10 @@ test('the write tool refuses, and edit still works', async () => {
   await tools.edit.execute('2', { path: 'pages/p01.js', old_string: 'line 7\n', new_string: 'line seven\n' } as never);
   assert.match(fs.readFileSync(path.join(dir, 'pages/p01.js'), 'utf8'), /line seven/);
   await tools.write.execute('3', { path: 'pages/p02.js', content: 'new page' } as never);
+  // a kit session's component: the first write goes through, the second whole one is refused
+  await tools.write.execute('4', { path: 'extras/kit/house.js', content: long } as never);
+  await assert.rejects(tools.write.execute('5', { path: 'extras/kit/house.js', content: long + '\nmore' } as never), /edit the parts that need changing/);
+  await tools.edit.execute('6', { path: 'extras/kit/house.js', old_string: 'line 3\n', new_string: 'line three\n' } as never);
 });
 
 test("the studio's record of the run is out of the agents' reach, but for the planner's decision on a change", async () => {
