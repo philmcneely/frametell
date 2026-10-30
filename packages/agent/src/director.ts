@@ -14,6 +14,7 @@ import { designedFonts, designedIssues, designedLook, type Look } from './look.j
 import { BRAND_DIR, SIGN_OFF_HOLD, cornerMark, signsOff } from './brand.js';
 import { assetPath, assetsOn, userAssets } from './assets.js';
 import { inkScript } from './ink.js';
+import type { Decider } from './decide.js';
 import { PICTURES_DIR, PICTURES_MANIFEST, cutOut, inkPath, cutOutTrouble, lookPrefix, pictureFile, pictureIssues, pictureKey, ledPage, picturePageNote, picturePath, picturePlan, picturePlanNote, picturePrompt, pictureReviewNote, pictureSize, pictureStyle, picturesOn, readPictures, sniffPicture, type ImageProvider, type Picture, type PicturePlan, type Pictures } from './pictures.js';
 import { ENGINE_DIR } from '@frametell/engine/tools/project.mjs';
 import { freeze, openIn, readIn, writeIn } from './projectfs.js';
@@ -74,6 +75,8 @@ export interface DirectorOptions {
   /** draws the film's generated pictures (pictures.ts), for a style that allows them. Absent: no pictures, and the
    *  storyboard is never told it may ask for any */
   images?: ImageProvider;
+  /** sorts a change the user asks for into its route (decide.ts). Absent: every change is planned */
+  decide?: Decider;
   /** false: the pages are drawn all at once. Otherwise the first page is drawn alone and the run waits at it (as at the
    *  storyboard) for the user to confirm the film's look, or say what to change, before the rest are drawn */
   firstPage?: boolean;
@@ -288,6 +291,17 @@ const fromLint = (i: LintIssue): PageIssue => ({ from: 'lint', kind: i.kind, at:
 const fromReview = (p: Problem): PageIssue => ({ from: 'review', at: p.at, msg: p.what });
 /** the session that reads a message the user sends mid-run (route) */
 const ROUTE_SESSION = 'route';
+/** the kinds of change a finished film is asked for (changeKind): only `look` goes straight to its pages' agents */
+const CHANGE_QUESTION = 'A user asks for a change to their finished narrated explainer video (pages drawn in code, some with AI-generated pictures). What kind of change is it?';
+const CHANGE_KINDS = {
+  look: 'how something on the page(s) they point at looks or moves on screen: layout, position, size, colour, on-screen text or titles, what is drawn there, motion or when things appear',
+  picture: 'something inside a generated picture or illustration: a person or character (face, eyes, hands, pose, expression), redrawing or removing a character, an object drawn in the picture',
+  words: 'what is heard: the narration text, how a word is pronounced, a pause, the voice or audio missing, the subtitles',
+  film: 'beyond the pages pointed at: the whole film, adding pages, its length, pace, language, style or overall story',
+  talk: 'no change to the video: a question, thanks, asking for text such as a title or caption, or saying not to change anything',
+};
+/** how sure the decision model must be of a kind to act on it (on 40 real changes: the clear ones 0.8–1, the vague below 0.6) */
+const CHANGE_SURE = 0.7;
 /** what a message mid-run is: a change for the film (noted for the sessions), a question (answered with `reply`), or both */
 export type MessageRoute = { kind: 'change' | 'question' | 'both' | 'go'; reply?: string };
 /** what the page agent said with its flag tool, if it used it */
@@ -1713,6 +1727,14 @@ export class Director {
     }
   }
 
+  /** what kind of change the user asks of a finished film, when the decision model is sure of it (CHANGE_KINDS) */
+  private async changeKind(request: string): Promise<keyof typeof CHANGE_KINDS | undefined> {
+    if (!this.o.decide) return undefined;
+    const [said, refs] = [request.replace(/<references>[\s\S]*?<\/references>/, '').trim(), /<references>([\s\S]*?)<\/references>/.exec(request)?.[1]?.trim()];
+    const a = await this.o.decide.choose({ request: said, ...(refs ? { pointsAt: refs } : {}) }, CHANGE_QUESTION, CHANGE_KINDS, this.o.signal);
+    return a && a.p >= CHANGE_SURE ? a.choice as keyof typeof CHANGE_KINDS : undefined;
+  }
+
   /**
    * A change to a finished film: the planner decides which pages it touches and how, those pages are redrawn from their
    * current code, then the film is checked again and plays in the preview. Everything else is kept as it is; the mp4
@@ -1724,15 +1746,11 @@ export class Director {
     this.state.change = request; this.save();
     const sb = this.project.storyboard();
     const named = sb.pages.filter((p, i) => new RegExp(`\\b${p.id}\\b|第\\s*${i + 1}\\s*页|\\bpage\\s*${i + 1}\\b`, 'i').test(request)).map((p) => p.id);
-    // a change to the picture of the page(s) it names needs no planning: it goes straight to those pages' agents.
-    // Anything that may touch the words (narration, subtitles, timing), or names no page, is planned first
-    // (not 讲 or 说: 「讲 ABC 的那部分」 points at a picture, and sent a centering fix through a minute of planning)
-    // the user's own words, in either language
-    const words = /口播|文案|台词|配音|字幕|旁白|这句|句子|念|读音|发音|读成|时长|节奏|\b(narrat\w*|script|voice\w*|subtitles?|captions?|wording|sentences?|pronounc\w*|timing|pac(e|ing))\b/i;
-    // a style drawn in pictures has no page agent: its pages are written from the scenes, so what shows changes only
-    // when a picture is drawn again or the narration changes, which the planner decides (seen: four asks to fix a
-    // face went straight to its page and changed nothing)
-    const direct = !this.pictureStyle()?.led && named.length > 0 && named.length <= 2 && !words.test(request.replace(/<references>[\s\S]*?<\/references>/, ''));
+    // a change to how the page(s) it names look needs no planning: it goes straight to those pages' agents. Anything
+    // else (the words, a generated picture, more than those pages, no change at all), or a kind the decision model isn't
+    // sure of, is planned first. A style drawn in pictures has no page agent (its pages are written from the scenes):
+    // always planned (seen: four asks to fix a face went straight to their page and changed nothing)
+    const direct = !this.pictureStyle()?.led && named.length > 0 && named.length <= 2 && await this.changeKind(request) === 'look';
     const storyboard = this.project.read('storyboard.json');
     let plan: RevisionPlan | undefined = direct ? named.map((id) => ({ id, note: request })) : undefined;
     if (!plan) {

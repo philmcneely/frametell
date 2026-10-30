@@ -34,6 +34,9 @@ export interface Config {
   /** an OpenAI-compatible image service (gpt-image-2 by default) for the generated pictures of a style that allows them;
    *  absent: films draw everything in code. Set in config.json (no panel for it yet) */
   image?: { key?: string; baseUrl?: string; model?: string };
+  /** a decision model (Vercel AI Gateway's /v1/evaluate, Jev by default) that sorts a change the user asks for into its
+   *  route; absent: every change is planned first. Set in config.json */
+  decide?: { key?: string; baseUrl?: string; model?: string };
   /** voices the user added by id (「我的音色」), checked when added */
   myVoices?: VoiceChoice[];
   /** interface language; absent = follow the system */

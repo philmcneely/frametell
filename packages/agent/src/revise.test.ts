@@ -99,3 +99,35 @@ test('a change to a film drawn in pictures is planned even when it names a page,
   assert.equal(inner.state.exported, false);
   assert.ok(events.some((e) => e.type === 'ready'));
 });
+
+/** a revision of a code-drawn film whose request names p01, the decision model answering `kind` (undefined: none set up) */
+async function routed(kind?: string, p = 0.95) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-revise-route-'));
+  fs.writeFileSync(path.join(dir, 'storyboard.json'), JSON.stringify({ title: 'T', summary: 'S', pages: [{ id: 'p01', section: 'a', say: '…', beats: [] }] }));
+  fs.writeFileSync(path.join(dir, 'script.js'), 'const META = {};\n');
+  const asked: unknown[] = [], planned: string[] = [], drawn: string[][] = [];
+  const decide = kind === undefined ? undefined : { choose: async (state: unknown) => { asked.push(state); return { choice: kind, p }; } };
+  const d = new Director({ dir, style: 'chalkboard', brief: { durationSec: 60, lang: 'en', replyLang: 'en' }, runtime: fake([], () => ''), decide });
+  Object.assign(d.project, { timeline: async () => ({ duration: 10, pages: [] }), commit: async () => undefined });
+  Object.assign(d, {
+    planRevision: async (request: string) => { planned.push(request); return { plan: [] }; },
+    pages: async (ids: string[]) => { drawn.push(ids); },
+    review: async () => undefined,
+  });
+  await d.revise('Make the title on page 1 bigger <references>Page 1 0:02 “Hello”</references>');
+  return { asked, planned, drawn };
+}
+
+test('a change the decision model is sure is about how the named page looks goes straight to that page', async () => {
+  const r = await routed('look');
+  assert.deepEqual(r.drawn, [['p01']]);
+  assert.deepEqual(r.planned, []);
+  assert.deepEqual(r.asked, [{ request: 'Make the title on page 1 bigger', pointsAt: 'Page 1 0:02 “Hello”' }]);
+});
+
+test('a change about the words, a picture, or one the decision model is unsure of, or with none set up, is planned', async () => {
+  for (const [kind, p] of [['words', 0.99], ['picture', 0.97], ['look', 0.4], [undefined, 0]] as const) {
+    const r = await routed(kind, p);
+    assert.equal(r.planned.length, 1, `${kind} ${p}`);
+  }
+});

@@ -1,3 +1,4 @@
+import type { Decider } from './decide.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -31,7 +32,7 @@ test('a plan that cannot be used says what is wrong with it', () => {
 
 type Step = (dir: string, text: string) => Partial<TurnResult> | void;
 /** a finished film and a planner that takes `steps` in turn, one per message, across the sessions it is opened in */
-async function change(request: string, steps: Step[], drew?: (inner: Record<string, unknown>) => void) {
+async function change(request: string, steps: Step[], drew?: (inner: Record<string, unknown>) => void, decide?: Decider) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-plan-'));
   fs.mkdirSync(path.join(dir, 'pages')); fs.mkdirSync(path.join(dir, '.studio'));
   fs.writeFileSync(path.join(dir, 'storyboard.json'), storyboard());
@@ -50,7 +51,7 @@ async function change(request: string, steps: Step[], drew?: (inner: Record<stri
       } };
     },
   };
-  const d = new Director({ dir, style: 'chalkboard', brief: { durationSec: 60, lang: 'zh', replyLang: 'zh' }, runtime, emit: (e) => events.push(e) });
+  const d = new Director({ dir, style: 'chalkboard', brief: { durationSec: 60, lang: 'zh', replyLang: 'zh' }, runtime, emit: (e) => events.push(e), decide });
   const drawn: { ids: string[]; revision?: Record<string, string> }[] = [];
   let reviewed = 0;
   const inner = d as unknown as Record<string, unknown> & { state: { change?: string; exported?: boolean; stage: string } };
@@ -145,7 +146,7 @@ test('a change drawn says, page by page, what each page agent changed', async ()
   const r = await change('第 2 页和第 4 页的圆再大一点', [], (inner) => {
     (inner.changed as Map<string, string>).set('p02', '把圆放大到原来的两倍');
     (inner.unchanged as Map<string, string | undefined>).set('p04', '已经是最大了');
-  });
+  }, { choose: async () => ({ choice: 'look', p: 0.98 }) });
   assert.equal(r.error, undefined);
   assert.deepEqual(r.drawn.map((d) => d.ids), [['p02', 'p04']]);
   const revised = r.events.filter((e) => e.type === 'revised');

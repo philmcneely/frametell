@@ -7,7 +7,7 @@ import crypto from 'node:crypto';
 import { createProject, linkProject } from '@frametell/engine/tools/project.mjs';
 import { createCatalog } from '@frametell/models';
 import { elevenLabsTts, volcengineTts } from '@frametell/voice';
-import { createWeb, openaiImages, userAssets, Director, findSources, hasSources, offlineWeb, openProjectFile, piRuntime, Project, readFd, writeIn, type AgentRuntime, type CreditFacts, type DirectorOptions, type MessageRoute, type Renderer, type StudioEvent, type Storyboard, type UserRef } from '@frametell/agent';
+import { createWeb, gatewayDecider, openaiImages, userAssets, Director, findSources, hasSources, offlineWeb, openProjectFile, piRuntime, Project, readFd, writeIn, type AgentRuntime, type CreditFacts, type DirectorOptions, type MessageRoute, type Renderer, type StudioEvent, type Storyboard, type UserRef } from '@frametell/agent';
 import type { Config, ConfigStore } from './config.js';
 import { prepareMaterials } from './materials.js';
 import { applyProxy } from './net.js';
@@ -206,6 +206,8 @@ function voiceFor(meta: ProjectMeta, cfg: Config) {
 
 /** the image service that draws a film's generated pictures, when one is set up */
 const imagesFor = (cfg: Config) => (cfg.image?.key ? openaiImages(cfg.image.key, { baseUrl: cfg.image.baseUrl, model: cfg.image.model }) : undefined);
+/** the decision model that routes a change, when one is set up */
+const decideFor = (cfg: Config) => (cfg.decide?.key ? gatewayDecider(cfg.decide.key, { baseUrl: cfg.decide.baseUrl, model: cfg.decide.model }) : undefined);
 
 class Runner {
   private subs = new Set<(e: Logged) => void>();
@@ -491,7 +493,7 @@ class Runner {
       const { tts, voice, provider } = voiceFor(meta, cfg);
       director = new Director({
         dir, runtime, pages, reviewer, research: plan && research ? { ...research, ...plan } satisfies DirectorOptions['research'] : undefined,
-        style: meta.style, look: meta.look, prices, tts, voice, concurrency: cfg.defaults.concurrency, images: imagesFor(cfg),
+        style: meta.style, look: meta.look, prices, tts, voice, concurrency: cfg.defaults.concurrency, images: imagesFor(cfg), decide: decideFor(cfg),
         ...(this.wait.waitMs ? { firstPageWaitMs: this.wait.waitMs } : {}), ...(this.wait.storyboardMs ? { storyboardWaitMs: this.wait.storyboardMs } : {}), firstPageSaid: this.logEndsAtWait(), ...(this.wait.pageChecks ? { pageChecks: this.wait.pageChecks } : {}),
         brief: { durationSec: meta.durationSec, topic: meta.topic, notes: meta.notes, styleNotes: meta.styleNotes, brand: meta.brand, lang: meta.lang ?? 'zh', replyLang: this.replyIn(meta), voice: provider, preferences: cfg.preferences },
         emit: this.emit, signal: this.abort.signal, renderer: this.renderer, review: this.review, exportDir: this.renderer ? undefined : cfg.exportDir,
