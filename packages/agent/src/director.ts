@@ -14,7 +14,7 @@ import { designedFonts, designedIssues, designedLook, type Look } from './look.j
 import { BRAND_DIR, SIGN_OFF_HOLD, cornerMark, signsOff } from './brand.js';
 import { assetPath, assetsOn, userAssets } from './assets.js';
 import { inkScript } from './ink.js';
-import type { Decider } from './decide.js';
+import { choose, type Decider } from './decide.js';
 import { PICTURES_DIR, PICTURES_MANIFEST, cutOut, inkPath, cutOutTrouble, lookPrefix, pictureFile, pictureIssues, pictureKey, ledPage, picturePageNote, picturePath, picturePlan, picturePlanNote, picturePrompt, pictureReviewNote, pictureSize, pictureStyle, picturesOn, readPictures, sniffPicture, type ImageProvider, type Picture, type PicturePlan, type Pictures } from './pictures.js';
 import { ENGINE_DIR } from '@frametell/engine/tools/project.mjs';
 import { freeze, openIn, readIn, writeIn } from './projectfs.js';
@@ -300,6 +300,18 @@ const CHANGE_KINDS = {
   film: 'beyond the pages pointed at: the whole film, adding pages, its length, pace, language, style or overall story',
   talk: 'no change to the video: a question, thanks, asking for text such as a title or caption, or saying not to change anything',
 };
+/** what a message the user sends mid-run is (route): only a change or a go-ahead it is sure of skips the model's reading */
+const MESSAGE_QUESTION = 'A user typed this into the message box of their explainer video while it is being made. What is it?';
+const MESSAGE_KINDS: Record<string, string> = {
+  change: 'an instruction for the film: something to make, add, leave out or do differently (how it looks, what is said, its length, voice or style), material or a script to use, or a correction',
+  question: 'needs an answer and changes nothing: a question about the film, its progress, time, credits or cost, or a remark or complaint that names nothing to change',
+  both: 'asks for a change and also asks a question',
+  go: 'only tells the film, which is waiting for them, to go on: continue, start, go ahead, looks good, fine as it is',
+};
+const MESSAGE_SURE = 0.85;
+/** what reaching a component means (kitReached): its own look, not where a page puts it */
+const KIT_CRITERIA = { true: 'the change is to how this thing itself looks or is drawn: its colour, shape, parts, size, style', false: 'the change is to the page alone (where things are, the camera, the background, a label, the pacing), or to something else' };
+const KIT_SURE = 0.85;
 /** how sure the decision model must be of a kind to act on it (on 40 real changes: the clear ones 0.8–1, the vague below 0.6) */
 const CHANGE_SURE = 0.7;
 /** what a message mid-run is: a change for the film (noted for the sessions), a question (answered with `reply`), or both */
@@ -379,6 +391,12 @@ export class Director {
    * about what is left to pay.
    */
   async route(text: string, credits?: CreditFacts): Promise<MessageRoute> {
+    // what the decision model is sure of needs no session: a change is passed on as it is, and a go-ahead at the
+    // first page's wait goes ahead. Only a message that needs words back (a question, a remark), or one it isn't sure
+    // of, is read by the model below, which writes the reply
+    const waiting = this.state.stage === 'pages' && this.state.firstPage === 'waiting';
+    const kind = await choose(this.o.decide, { message: text.trim(), filmWaitingForTheUser: waiting }, MESSAGE_QUESTION, waiting ? MESSAGE_KINDS : Object.fromEntries(Object.entries(MESSAGE_KINDS).filter(([k]) => k !== 'go')), this.o.signal).catch((e) => { if (stopped(e)) throw e; return undefined; });
+    if (kind && kind.p >= MESSAGE_SURE && (kind.choice === 'change' || kind.choice === 'go')) return { kind: kind.choice };
     let s: AgentSession | undefined;
     try {
       s = await this.session(ROUTE_SESSION, routeSystem, MAX.reviewerTurns, undefined, undefined, { tools: 'none', answers: [ROUTE] });
@@ -1222,6 +1240,17 @@ export class Director {
       : this.say('照这个改第一页，后面的页也会照这个来', 'Changing the first page as you said; the pages after it will follow it too') });
   }
 
+  /** the components a change at the first page reaches, as the decision model answers for each (one question each, in
+   *  one round trip); undefined when it isn't sure of every one, for the model's session to decide */
+  private async kitReached(items: KitItem[], change: string): Promise<string[] | undefined> {
+    const questions = Object.fromEntries(items.map((it, i) => [`c${i}`, { type: 'boolean' as const, instructions: `Must the film's component "${it.name}" (${it.what}) itself change for this? It is drawn the same on every page that shows it.`, criteria: KIT_CRITERIA }]));
+    const a = await this.o.decide?.ask({ change, components: items.map((it) => `${it.name}: ${it.what}`) }, questions, this.o.signal).catch((e) => { if (stopped(e)) throw e; return undefined; });
+    if (!a) return undefined;
+    const p = items.map((_, i) => (a[`c${i}`] as { probability: number }).probability);
+    if (p.some((x) => x > 1 - KIT_SURE && x < KIT_SURE)) return undefined;
+    return items.filter((_, i) => p[i] >= KIT_SURE).map((it) => it.name);
+  }
+
   /**
    * A change the user asked for at the first page, made in the film's components it reaches: the director names them
    * (none, most often), each one's session makes the change keeping its interface, and they are checked again as at
@@ -1230,14 +1259,16 @@ export class Director {
   private async kitChange(change: string) {
     const items = this.kitItems();
     if (!items.length) return;
-    let names: string[] = [];
-    const router = await this.session('kit-route', kitChangeSystem, MAX.reviewerTurns, undefined, undefined, { tools: 'none', answers: [KIT_CHANGE] });
-    try {
-      const r = await this.send(router, kitChangeAsk(items, change));
-      const said = (r.answers.find((a) => a.name === KIT_CHANGE.name)?.args as { names?: unknown } | undefined)?.names;
-      names = Array.isArray(said) ? items.map((x) => x.name).filter((n) => said.includes(n)) : [];
-    } catch (e) { if (stopped(e)) throw e; } finally { await router.close(); }
-    if (!names.length) return;
+    let names = await this.kitReached(items, change);
+    if (!names) {
+      const router = await this.session('kit-route', kitChangeSystem, MAX.reviewerTurns, undefined, undefined, { tools: 'none', answers: [KIT_CHANGE] });
+      try {
+        const r = await this.send(router, kitChangeAsk(items, change));
+        const said = (r.answers.find((a) => a.name === KIT_CHANGE.name)?.args as { names?: unknown } | undefined)?.names;
+        names = Array.isArray(said) ? items.map((x) => x.name).filter((n) => said.includes(n)) : [];
+      } catch (e) { if (stopped(e)) throw e; } finally { await router.close(); }
+    }
+    if (!names?.length) return;
     this.emit({ type: 'kit', status: 'start', components: names });
     const was = new Map(names.map((n) => [n, [this.project.read(kitPart(n)), this.project.read(kitPartCheck(n))] as const]));
     const undo = () => { for (const [n, [code, check]] of was) { this.project.write(kitPart(n), code); this.project.write(kitPartCheck(n), check); } };
@@ -1731,7 +1762,7 @@ export class Director {
   private async changeKind(request: string): Promise<keyof typeof CHANGE_KINDS | undefined> {
     if (!this.o.decide) return undefined;
     const [said, refs] = [request.replace(/<references>[\s\S]*?<\/references>/, '').trim(), /<references>([\s\S]*?)<\/references>/.exec(request)?.[1]?.trim()];
-    const a = await this.o.decide.choose({ request: said, ...(refs ? { pointsAt: refs } : {}) }, CHANGE_QUESTION, CHANGE_KINDS, this.o.signal);
+    const a = await choose(this.o.decide, { request: said, ...(refs ? { pointsAt: refs } : {}) }, CHANGE_QUESTION, CHANGE_KINDS, this.o.signal);
     return a && a.p >= CHANGE_SURE ? a.choice as keyof typeof CHANGE_KINDS : undefined;
   }
 

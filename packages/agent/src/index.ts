@@ -16,6 +16,6 @@ export { openIn, openProjectFile, readIn, writeIn, listIn, editIn, readFd, Refus
 export { findSources, hasSources, type Sources } from './research/sources.js';
 export { createWeb, offlineWeb, searchProvider, SEARCH_PROVIDERS, type SearchProviderId, type SearchSettings, type Web } from './research/web.js';
 export { RESEARCH_LIMITS, type ResearchLimits } from './research/research.js';
-export { gatewayDecider, type Decider } from './decide.js';
+export { choose, gatewayDecider, type Answer, type Decider, type Question } from './decide.js';
 export { PICTURES_DIR, PICTURES_MANIFEST, openaiImages, readPictures, type ImageProvider, type Picture, type Pictures } from './pictures.js';
 export { USER_ASSETS_DIR, USER_ASSETS_MANIFEST, USER_ASSETS_MAX, USER_ASSET_FILE, cleanUserAssets, userAssets, assetsSection, type UserAsset, type UserAssetType } from './assets.js';

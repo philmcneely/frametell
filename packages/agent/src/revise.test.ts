@@ -106,7 +106,7 @@ async function routed(kind?: string, p = 0.95) {
   fs.writeFileSync(path.join(dir, 'storyboard.json'), JSON.stringify({ title: 'T', summary: 'S', pages: [{ id: 'p01', section: 'a', say: '…', beats: [] }] }));
   fs.writeFileSync(path.join(dir, 'script.js'), 'const META = {};\n');
   const asked: unknown[] = [], planned: string[] = [], drawn: string[][] = [];
-  const decide = kind === undefined ? undefined : { choose: async (state: unknown) => { asked.push(state); return { choice: kind, p }; } };
+  const decide = kind === undefined ? undefined : { ask: async (state: unknown) => { asked.push(state); return { q: { type: 'choice' as const, choice: kind, probabilities: { [kind]: p } } }; } };
   const d = new Director({ dir, style: 'chalkboard', brief: { durationSec: 60, lang: 'en', replyLang: 'en' }, runtime: fake([], () => ''), decide });
   Object.assign(d.project, { timeline: async () => ({ duration: 10, pages: [] }), commit: async () => undefined });
   Object.assign(d, {

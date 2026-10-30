@@ -28,7 +28,7 @@ function film(answer: unknown) {
   const d = new Director({ dir, style: 'whiteboard', brief: { durationSec: 120, lang: 'en', replyLang: 'en' }, runtime: model('director', answer, seen), reviewer: { runtime: model('reviewer', answer, seen) }, emit: (e) => events.push(e) });
   const sb = { title: 'T', summary: 'S', pages: [{ id: 'p01' }, { id: 'p02' }, { id: 'p03' }] };
   Object.assign(d.project, { storyboard: () => sb, timeline: async () => ({ duration: 90, pages: [] }) });
-  const state = (d as unknown as { state: { stage: string; pages: Record<string, { status: string }>; notes?: string[] } }).state;
+  const state = (d as unknown as { state: { stage: string; firstPage?: string; pages: Record<string, { status: string }>; notes?: string[] } }).state;
   state.stage = 'pages'; state.pages = { p01: { status: 'ok' } as never, p02: { status: 'drawing' } as never };
   return { d, seen, events, state };
 }
@@ -91,4 +91,41 @@ test('without credits the router is told the money spent, and nothing about cred
   assert.doesNotMatch(short, /Spent on the model/);
   const unknown = routeAsk('enough?', { stage: 'storyboard', pagesDone: 0 }, { available: 100, spent: 0, perMinute: 150 });
   assert.match(unknown, /can't be worked out yet/);
+});
+
+/** the same film with a decision model that answers `choice` at `p` (the director's `decide`) */
+function decided(choice: string, p: number, answer: unknown = { change: false, question: true, reply: 'About 3 minutes.' }) {
+  const f = film(answer), asked: unknown[] = [];
+  (f.d as unknown as { o: { decide: unknown } }).o.decide = { ask: async (state: unknown) => { asked.push(state); return { q: { type: 'choice', choice, probabilities: { [choice]: p } } }; } };
+  return { ...f, asked };
+}
+
+test('a change or a go-ahead the decision model is sure of opens no session; anything else is read by the model', async () => {
+  const change = decided('change', 0.97);
+  assert.deepEqual(await change.d.route('make the background dark blue'), { kind: 'change' });
+  assert.equal(change.seen.length, 0);
+  assert.deepEqual(change.asked, [{ message: 'make the background dark blue', filmWaitingForTheUser: false }]);
+  // a go-ahead only counts while the film waits for the user
+  const go = decided('go', 0.99);
+  go.state.firstPage = 'waiting';
+  assert.deepEqual(await go.d.route('continue'), { kind: 'go' });
+  assert.equal(go.seen.length, 0);
+  for (const [choice, p] of [['question', 0.99], ['both', 0.95], ['change', 0.7]] as const) {
+    const f = decided(choice, p);
+    assert.deepEqual(await f.d.route('how long will it take?'), { kind: 'question', reply: 'About 3 minutes.' }, `${choice} ${p}`);
+    assert.equal(f.seen.length, 1);
+  }
+});
+
+test('the components a first-page change reaches: taken from the decision model only when it is sure of every one', async () => {
+  const items = [{ name: 'fox', what: 'the host, orange with a scarf' }, { name: 'frame', what: 'the frame charts sit in' }];
+  const reach = async (ps: number[] | undefined) => {
+    const f = film(undefined);
+    (f.d as unknown as { o: { decide: unknown } }).o.decide = { ask: async () => (ps ? Object.fromEntries(ps.map((p, i) => [`c${i}`, { type: 'boolean', probability: p }])) : undefined) };
+    return (f.d as unknown as { kitReached(i: unknown, c: string): Promise<string[] | undefined> }).kitReached(items, 'the scarf in blue');
+  };
+  assert.deepEqual(await reach([0.95, 0.03]), ['fox']);
+  assert.deepEqual(await reach([0.04, 0.1]), []);
+  assert.equal(await reach([0.95, 0.5]), undefined);   // unsure of one: the model's session decides
+  assert.equal(await reach(undefined), undefined);     // no answer: likewise
 });

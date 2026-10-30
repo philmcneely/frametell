@@ -146,7 +146,7 @@ test('a change drawn says, page by page, what each page agent changed', async ()
   const r = await change('第 2 页和第 4 页的圆再大一点', [], (inner) => {
     (inner.changed as Map<string, string>).set('p02', '把圆放大到原来的两倍');
     (inner.unchanged as Map<string, string | undefined>).set('p04', '已经是最大了');
-  }, { choose: async () => ({ choice: 'look', p: 0.98 }) });
+  }, { ask: async () => ({ q: { type: 'choice', choice: 'look', probabilities: { look: 0.98 } } }) });
   assert.equal(r.error, undefined);
   assert.deepEqual(r.drawn.map((d) => d.ids), [['p02', 'p04']]);
   const revised = r.events.filter((e) => e.type === 'revised');
