@@ -165,7 +165,7 @@ export default {
     },
     outgoing: {
       sending: '发送中…',
-      opening: '正在打开这部片子的工作区，一般几秒 · {n} 秒',
+      opening: '正在打开这部片子的工作区，通常 15–30 秒 · {n} 秒',
       refs: '{n} 个附件',
     },
     queue: {

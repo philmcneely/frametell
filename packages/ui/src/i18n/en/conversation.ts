@@ -163,7 +163,7 @@ const en: typeof zh = {
     },
     outgoing: {
       sending: 'Sending…',
-      opening: 'Opening this film\'s workspace, usually a few seconds · {n} s',
+      opening: 'Opening this film\'s workspace, usually 15–30 s · {n} s',
       refs: '{n} attachments',
     },
     queue: {

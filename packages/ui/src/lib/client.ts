@@ -113,6 +113,9 @@ export interface Hosted {
   /** what the person does in the workbench (lib/track.ts): a short name and a few small plain fields, never what was
    *  typed; absent: nothing is told to anyone */
   track?(name: string, props: Record<string, string | number | boolean>): void;
+  /** a change is about to be written to the film: its workspace opened ahead of the message (a hosted service puts it
+   *  away while the film rests, and opening it again takes a while). Fire and forget; absent: nothing to open */
+  warm?(project: string): void;
 }
 
 /** what a hosted service refused for want of credits: a failed call carries `credits` (what it needed, what was there) */

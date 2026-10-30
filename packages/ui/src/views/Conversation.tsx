@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUpRight, Check, ChevronRight, CircleDashed, Clapperboard, Coins, Download, Loader2, Pause, Play, RefreshCw, TriangleAlert } from 'lucide-react';
 import { client, downloadUrl, hosted, type ProjectView } from '../lib/client';
 import { clock, film, finished, pictureRatio, plannedPictures, relPath, shownStages, STAGE_NAME, STAGES, type FeedItem, type PageView, type Picture, type RunView, type Stage, type Storyboard, isWorking } from '../lib/run';
@@ -7,7 +7,7 @@ import { useNow } from '../lib/hooks';
 import { Crest } from '../components/Logo';
 import { FilmCredits, orShort, reportShort, ShortNotice, useShort, useSpent } from '../components/Credits';
 import { STYLE_NAME } from '../lib/styles';
-import { Composer, RefChip } from './Composer';
+import { Composer, RefChip, Sending, type Sent } from './Composer';
 import { DeckControls, ExportControls, RevealFile } from './Export';
 import { Lightbox, type LightItem } from './Lightbox';
 import type { Ref } from '../lib/refs';
@@ -699,7 +699,15 @@ export function Conversation({ run, project, onSelectPage, onPlayPage, selected,
   const { locale } = useT();
   const box = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
-  useEffect(() => { const el = box.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }, [run.feed.length, run.pages, run.stages, run.activity, run.revising, run.pictures]);
+  // a message on its way to the film at rest (Composer), shown in the conversation until the film's log has it: a
+  // message more in the log than when it went, or a while after the film took it
+  const said = run.feed.filter((f) => f.kind === 'user').length, saidRef = useRef(said);
+  saidRef.current = said;
+  const [sent, setSent] = useState<Sent & { said: number }>();
+  const onSent = useCallback((s?: Sent) => setSent((cur) => (s ? { ...s, said: cur && cur.at === s.at ? cur.said : saidRef.current } : undefined)), []);
+  const sending = sent && said <= sent.said ? sent : undefined;
+  useEffect(() => { if (!sent?.done) return; const t = setTimeout(() => setSent(undefined), 8000); return () => clearTimeout(t); }, [sent?.done]);
+  useEffect(() => { const el = box.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }, [run.feed.length, run.pages, run.stages, run.activity, run.revising, run.pictures, !!sending]);
   const list = useMemo(() => blocks(run.feed), [run.feed]);
   const lastPaused = [...run.feed].reverse().find((f) => f.kind === 'paused');
   // the page open on the workbench, offered to the composer as a one-click reference
@@ -745,13 +753,14 @@ export function Conversation({ run, project, onSelectPage, onPlayPage, selected,
             if (it.kind === 'note') return <p key={it.key} className="flex items-start gap-2.5 text-[13px] leading-relaxed text-ink-2"><span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-paper ring-1 ring-line"><Crest size={11} /></span>{it.text}</p>;
             return null;
           })}
+          {sending && <Sending sent={sending} project={project} />}
           {isWorking(run) && <LiveLine run={run} />}
         </div>
       </div>
       <div className="border-t border-line bg-paper-2">
         <ShortNotice project={project.id} run={run} />
         <NowBar run={run} project={project} />
-        <Composer run={run} project={project} viewing={viewing} openSettings={openSettings} />
+        <Composer run={run} project={project} viewing={viewing} openSettings={openSettings} onSent={onSent} />
       </div>
     </div>
   );
