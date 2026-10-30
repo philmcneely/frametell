@@ -137,6 +137,9 @@
 #pv-time { font-variant-numeric: tabular-nums; min-width: 96px; text-align: center; }
 #pv-hint { position: fixed; inset: 0; display: grid; place-items: center; z-index: 98; pointer-events: none; }
 #pv-hint span { background: rgba(0,0,0,0.55); color: #fff; font: 600 22px -apple-system, "PingFang SC", sans-serif; padding: 16px 28px; border-radius: 40px; transition: opacity .3s; }
+#pv-sound { position: fixed; left: 14px; top: 14px; z-index: 100; display: none; align-items: center; gap: 8px; border: 0; border-radius: 40px;
+  padding: 12px 20px; background: rgba(0,0,0,0.72); color: #fff; font: 600 18px -apple-system, "PingFang SC", sans-serif; cursor: pointer; }
+#pv-sound.on { display: flex; }
 #viewport { cursor: pointer; }`;
     document.head.appendChild(css);
     const bar = document.createElement('div');
@@ -147,6 +150,10 @@
     hint.id = 'pv-hint';
     hint.innerHTML = `<span>${say('点击画面或按空格播放', 'Click the picture or press Space to play')}</span>`;
     document.body.appendChild(hint);
+    const sound = document.createElement('button');
+    sound.id = 'pv-sound';
+    sound.textContent = say('🔇 点一下开声音', '🔇 Tap for sound');
+    document.body.appendChild(sound);
     const $ = (id) => document.getElementById(id);
     const seek = $('pv-seek');
     const embedded = window.parent !== window;
@@ -186,14 +193,24 @@
       hint.firstChild.textContent = say('点击画面播放（有声音）', 'Click the picture to play with sound');
       hint.firstChild.style.opacity = '1';
     };
-    // The context opens in the tap that plays (Safari before 15 also wanted a sound started in it). Asked to play from
-    // outside (the Studio panel), it may stay shut: the film stops and asks for a click, as a refused <audio> does
-    const unlock = () => {
+    // The context opens in a tap inside this frame (Safari before 15 also wanted a sound started in it). Asked to play
+    // from outside (the Studio panel: its play button, a page in the lane, a line), Safari keeps it shut: a tap outside
+    // never counts for a frame of another origin, and it ignores allow="autoplay". The film used to stop there after half
+    // a second and ask for a click: on a phone it looked stuck, and silent. Now it plays on, and a button asks for one
+    // tap for sound; the lines then speak from where the film is. Any tap inside the frame opens it as well.
+    const open = () => {
       if (!ac || ac.state === 'running') return;
       ac.resume().catch(() => {});
       const s = ac.createBufferSource(); s.buffer = ac.createBuffer(1, 1, 22050); s.connect(ac.destination); s.start(0);
-      setTimeout(() => { if (playing && ac.state !== 'running') needsClick(); }, 500);
     };
+    const unlock = () => {
+      if (!ac || ac.state === 'running') return;
+      open();
+      setTimeout(() => { if (ac.state !== 'running') sound.classList.add('on'); }, 500);
+    };
+    if (ac) ac.addEventListener('statechange', () => { if (ac.state === 'running') sound.classList.remove('on'); });
+    sound.addEventListener('click', (e) => { e.stopPropagation(); open(); });
+    addEventListener('pointerup', open, true);   // Safari counts the end of a touch as a tap, not its start
     const toggle = () => (playing ? pause() : play());
     const jump = (to) => {
       t = Math.max(0, Math.min(dur, to)); wall = t; t0 = performance.now();
