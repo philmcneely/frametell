@@ -115,6 +115,22 @@ test('after the go-ahead the first picture is drawn from nothing, the rest from 
   assert.equal(f.calls.length, 3);
 });
 
+test('a sample that can\'t be had: the next picture drawn from nothing stands in for its look, and it is tried again at the end', async () => {
+  const f = film({ fail: /small round bird/ });
+  await f.d.pictures();
+  const whale = f.calls.filter((c) => /humpback/.test(c.prompt)), fly = f.calls.find((c) => /bird flying/.test(c.prompt))!;
+  assert.equal(whale.length, 1);
+  assert.equal(whale[0].refs, 0, 'the stand-in is drawn from nothing');
+  assert.equal(f.calls.findIndex((c) => /humpback/.test(c.prompt)), 3, 'drawn alone, after the sample\'s three tries');
+  assert.equal(fly.refs, 1);
+  assert.match(fly.prompt, /shows the look of this film/);
+  const bird = f.calls.filter((c) => /small round bird/.test(c.prompt));
+  assert.equal(bird.length, 6, 'three tries, then three more from the stand-in\'s look');
+  assert.equal(bird[5].refs, 1);
+  assert.deepEqual(readPictures(f.dir).items.map((p) => p.id).sort(), ['bird-fly', 'whale']);
+  assert.equal(f.d.state.pictures, 'done');
+});
+
 test('no picture is drawn again while the storyboard waits: there is nothing drawn yet', async () => {
   const f = film();
   f.d.state.stage = 'approval';
@@ -125,7 +141,7 @@ test('no picture is drawn again while the storyboard waits: there is nothing dra
 test('a picture that can\'t be had is left out, said, and never holds the film up', async () => {
   const f = film({ fail: /humpback/ });
   await f.d.pictures();
-  assert.equal(f.calls.filter((c) => /humpback/.test(c.prompt)).length, 2, 'tried once more');
+  assert.equal(f.calls.filter((c) => /humpback/.test(c.prompt)).length, 3, 'tried twice more');
   assert.deepEqual(readPictures(f.dir).items.map((p) => p.id).sort(), ['bird', 'bird-fly']);
   const failed = pictureEvents(f.events).find((e) => e.status === 'failed');
   assert.equal(failed?.id, 'whale');

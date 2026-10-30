@@ -930,8 +930,9 @@ export class Director {
     const style = this.pictureStyle()!;
     // a reference is a picture of the film's, or a file of the person's (a picture's `from`)
     const from = refs.flatMap((r) => { try { return [new Uint8Array(readIn(this.o.dir, typeof r === 'string' ? r : picturePath(r), { record: true }))]; } catch { return []; } });
-    let data: Uint8Array | undefined, last: unknown, ask = prompt;
-    for (let i = 0; i < 2; i++) {
+    let data: Uint8Array | undefined, last: unknown, ask = prompt, again = false;
+    // asked for up to 3 times: a request stuck upstream (timed out) or refused is asked for afresh
+    for (let i = 0; i < 3; i++) {
       try {
         const got = await this.o.images!.draw({ prompt: ask, size: pictureSize(p), quality: style.quality, transparent: cutOut(p.kind), refs: from.length ? from : undefined, signal: this.o.signal });
         data = got;
@@ -939,7 +940,9 @@ export class Director {
         // a second one like it is kept, as better than none
         const trouble = cutOut(p.kind) && sniffPicture(got) ? cutOutTrouble(got) : undefined;
         if (!trouble) break;
-        console.warn(`[pictures] ${p.id}: ${trouble}${i ? ', kept' : ', drawn again'}`);
+        console.warn(`[pictures] ${p.id}: ${trouble}${again ? ', kept' : ', drawn again'}`);
+        if (again) break;
+        again = true;
         ask = `${prompt}\nThe last attempt was wrong: ${trouble}. Draw the subject alone on full transparency, its own outline the outermost thing in the picture.`;
       } catch (e) { if (stopped(e) || this.o.signal?.aborted) throw e; last = e; if (data) break; }
     }
@@ -1006,19 +1009,27 @@ export class Director {
     };
     const [first, ...rest] = plan;
     await one(first, [], 'none');
-    const sample = drawn.get(first.id);
+    let sample = drawn.get(first.id);
+    // the sample not had: the next picture drawn from nothing stands in for it, drawn alone first, so the others still
+    // share one look; the sample is drawn again from it at the end
+    if (!sample) {
+      const stand = rest.find((p) => !p.like && !p.from && !p.uses?.length);
+      if (stand) { await one(stand, [], 'none'); sample = drawn.get(stand.id); }
+    }
     // a film from before designs has one cast sheet, the sample: every scene is drawn from it, its people as they are
     // there. A film with designs draws them from the first one's look, then each scene from the designs it shows
-    const sheet = style.cast && first.id === CAST && !first.base;
+    const sheet = style.cast && first.id === CAST && !first.base && sample?.id === first.id;
     const look = (): [Picture[], RefMode] => (sample ? [[sample], sheet ? 'cast' : 'look'] : [[], 'none']);
     const from = (p: PicturePlan): [Picture[], RefMode, PicturePlan[]] => {
       const uses = (p.uses ?? []).flatMap((id) => { const b = plan.find((q) => q.id === id), d = drawn.get(id); return b && d ? [[b, d] as const] : []; });
       return uses.length ? [uses.map(([, d]) => d), 'uses', uses.map(([b]) => b)] : [...look(), []];
     };
     const many = PICTURES_AT_ONCE;
-    await pool(rest.filter((p) => p.base && !p.like), many, (p) => one(p, ...look()));
-    await pool(rest.filter((p) => !p.base && !p.like), many, (p) => one(p, ...from(p)));
-    await pool(rest.filter((p) => p.like), many, (p) => { const base = drawn.get(p.like!); return base ? one(p, [base], 'same') : one(p, ...from(p)); });
+    const todo = rest.filter((p) => !drawn.has(p.id));
+    await pool(todo.filter((p) => p.base && !p.like), many, (p) => one(p, ...look()));
+    await pool(todo.filter((p) => !p.base && !p.like), many, (p) => one(p, ...from(p)));
+    await pool(todo.filter((p) => p.like), many, (p) => { const base = drawn.get(p.like!); return base ? one(p, [base], 'same') : one(p, ...from(p)); });
+    if (!drawn.has(first.id) && sample) await one(first, ...look());
     // pictures the storyboard no longer asks for are let go
     const now = readPictures(this.o.dir);
     const gone = now.items.filter((x) => !plan.some((p) => p.id === x.id));

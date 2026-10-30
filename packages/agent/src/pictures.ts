@@ -393,7 +393,8 @@ export function openaiImages(key: string, o: { baseUrl?: string; model?: string 
   return {
     model,
     async draw({ prompt, size, quality, transparent, refs, signal }) {
-      const timeout = AbortSignal.timeout(180_000);
+      // a picture takes ~20 s; one not had in 2 minutes has stuck upstream and is asked for afresh (drawPicture)
+      const timeout = AbortSignal.timeout(120_000);
       const sig = signal ? AbortSignal.any([signal, timeout]) : timeout;
       const ask = () => {
         if (!refs?.length) return fetch(`${base}/v1/images/generations`, {
@@ -407,7 +408,7 @@ export function openaiImages(key: string, o: { baseUrl?: string; model?: string 
         return fetch(`${base}/v1/images/edits`, { method: 'POST', headers: { authorization: `Bearer ${key}` }, body: form, signal: sig });
       };
       // too many at once (the gateway's cap for a film, or the service's rate limit): asked again after a wait, as
-      // long as the picture's 3 minutes last, never failed at once
+      // long as the picture's 2 minutes last, never failed at once
       let res = await ask();
       for (let i = 0; res.status === 429 && i < 4; i++) {
         await res.body?.cancel();
