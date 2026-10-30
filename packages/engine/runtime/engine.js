@@ -30,12 +30,18 @@
   // What a page draws is a list of things, each one call its code makes to the builder (P.text, P.box, a kit's card),
   // numbered 1, 2, 3… in the order the code makes them: the same every time the page is built. An editor names a thing
   // by that number, and what was done to it by hand is written after the page's code as ENGINE.edits('<page>', {…}):
-  //   { "<n>": { dx, dy, scale, ox, oy, hidden, text: { "<j>": "words" } } }
+  //   { "<n>": { fp, dx, dy, scale, ox, oy, hidden, text: { "<j>": "words" } } }
   // moved by dx/dy and scaled by `scale` about (ox, oy) (stage px), taken off the picture, or its j-th words (its
   // calls to P.text, from 0) shown as others. The page's code is never changed: the edits are laid over what it draws.
-  // Each thing's outermost elements carry data-item="<n>" and data-call (the builder's call that drew it: text, box…).
-  const edits = {};
+  // A thing is also known by what it is: `fp`, its call, the words its code gives it (its first string) and which of
+  // the page's things with that call and those words it is ("text|+¼ day|2"). An edit with an fp goes to the thing
+  // that has it wherever the code now draws it (a page changed later draws other things before it); one whose thing
+  // is gone is an orphan (ENGINE.orphans(page)), applied to nothing. An edit without an fp goes by its number.
+  // Each thing's outermost elements carry data-item="<n>", data-call (the builder's call that drew it: text, box…)
+  // and data-fp.
+  const edits = {}, orphans = {};
   function editsOf(id, map) { edits[id] = map && typeof map === 'object' ? map : {}; }
+  const firstWords = (args) => { const w = args.find((a) => typeof a === 'string'); return w == null ? '' : w.slice(0, 60); };
   /** the builder's helpers that tell a time, make a layer, move the camera or work for other calls: not things */
   const NOT_THINGS = new Set(['constructor', 'c', 'cw', 'ce', 'seed', 'act', 'tick', 'handle', 'ro', 'shapeOf', 'texture', 'layer', 'cam', 'push', 'pan', 'slam', 'shake', 'back']);
   let building = null;   // the page being built: { id, n, watch }
@@ -57,14 +63,20 @@
           return f.apply(this, args);
         }
         if (!building) return f.apply(this, args);
-        const n = ++building.n, ed = edits[building.id]?.[n];
+        const n = ++building.n, key = name + '|' + firstWords(args);
+        const k = building.seen.get(key) ?? 0;
+        building.seen.set(key, k + 1);
+        const fp = `${key}|${k}`;
+        const byFp = building.byFp.get(fp), plain = edits[building.id]?.[n];
+        const ed = byFp ? byFp[1] : plain && !plain.fp ? plain : undefined;
+        if (byFp) building.claimed.add(byFp[0]); else if (ed) building.claimed.add(String(n));
         building.watch.takeRecords();
         thing = { n, j: 0, ed };
         if (name === 'text') { const w = ed?.text?.[thing.j++]; if (typeof w === 'string') args[0] = w; }
         try { return f.apply(this, args); } finally {
           const added = building.watch.takeRecords().flatMap((r) => [...r.addedNodes]).filter((x) => x.nodeType === 1);
           thing = null;
-          place(added, n, ed, name);
+          place(added, n, ed, name, fp);
         }
       };
     }
@@ -73,9 +85,9 @@
   /** a thing's outermost elements, numbered; moved or hidden as it was edited. A move puts them, where they were, into
    *  a group of their own (an SVG <g>, or a stage-sized <div>) that is moved: the engine's own animation of each goes on
    *  inside it, and what was drawn over or under it still is */
-  function place(added, n, ed, call) {
+  function place(added, n, ed, call, fp) {
     const tops = added.filter((x) => x.isConnected && !added.some((o) => o !== x && o.contains(x)));
-    for (const x of tops) { x.setAttribute('data-item', n); x.setAttribute('data-call', call); }
+    for (const x of tops) { x.setAttribute('data-item', n); x.setAttribute('data-call', call); x.setAttribute('data-fp', fp); }
     if (!ed || !tops.length) return;
     if (ed.hidden) for (const x of tops) x.style.display = 'none';
     const dx = num(ed.dx, 0), dy = num(ed.dy, 0), sc = num(ed.scale, 1), ox = num(ed.ox, 0), oy = num(ed.oy, 0);
@@ -87,6 +99,7 @@
       const g = svg ? document.createElementNS(parent.namespaceURI, 'g') : document.createElement('div');
       g.setAttribute('data-item', n);
       g.setAttribute('data-call', call);
+      g.setAttribute('data-fp', fp);
       g.setAttribute('class', 'edited');   // a group that only moves what is in it: an editor looks through it
       if (svg) g.setAttribute('transform', `translate(${ox + dx} ${oy + dy}) scale(${sc}) translate(${-ox} ${-oy})`);
       else Object.assign(g.style, { position: 'absolute', inset: '0', transformOrigin: `${ox}px ${oy}px`, transform: `translate(${dx}px, ${dy}px) scale(${sc})` });
@@ -203,10 +216,16 @@
         countThings();
         const watch = new MutationObserver(() => {});
         watch.observe(root, { childList: true, subtree: true });
-        building = { id: pg.id, n: 0, watch };
+        const mine = Object.entries(edits[pg.id] ?? {});
+        building = { id: pg.id, n: 0, watch, seen: new Map(), claimed: new Set(),
+          byFp: new Map(mine.filter(([, e]) => typeof e?.fp === 'string').map(([n, e]) => [e.fp, [n, e]])) };
+        const b = building;
         try { if (loadErrors[pg.id]) throw loadErrors[pg.id]; if (fn) fn(B, pg); else B.title(pg.title); }
         catch (e) { cam.innerHTML = ''; hud.innerHTML = ''; obj.sh.acts.length = 0; obj.sh.ticks.length = 0; fail(obj, 'build', e); }
-        finally { PV.colorPage = undefined; building = null; thing = null; watch.disconnect(); }
+        finally {
+          PV.colorPage = undefined; building = null; thing = null; watch.disconnect();
+          orphans[pg.id] = mine.filter(([n]) => !b.claimed.has(n)).map(([n]) => +n);
+        }
       }
     }
     chrome = (SCRIPT.META || {}).chrome === true ? buildChrome(frame) : null;   // META.chrome: true → series header (META.course · META.no | section)
@@ -258,5 +277,5 @@
     for (const fn of window.FRAME_HOOKS || []) fn(t, layout);   // extras can draw things that live across pages (a host character)
   }
 
-  window.ENGINE = { visual, edits: editsOf, init, renderAt, get layout() { return layout; }, get pages() { return pages; }, get errors() { return errors; }, get colors() { return [...PV.unknownColors].map(([page, names]) => ({ page, names: [...names] })); }, source: (id) => visuals[id]?.toString() };
+  window.ENGINE = { visual, edits: editsOf, orphans: (id) => orphans[id] ?? [], init, renderAt, get layout() { return layout; }, get pages() { return pages; }, get errors() { return errors; }, get colors() { return [...PV.unknownColors].map(([page, names]) => ({ page, names: [...names] })); }, source: (id) => visuals[id]?.toString() };
 })();

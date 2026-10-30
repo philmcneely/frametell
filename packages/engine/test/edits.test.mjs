@@ -12,7 +12,7 @@ import { findChrome } from '../tools/bins.mjs';
 
 const { chromium } = createRequire(import.meta.url)('playwright-core');
 
-const PAGE = (edits) => `ENGINE.visual('p01', (P) => {
+const PAGE = (edits, before = '') => `ENGINE.visual('p01', (P) => {${before}
   P.title('Title words');                                             // 1
   P.box(200, 300, 300, 160, { color: 'ink', at: 0 });                  // 2
   ['a', 'b', 'c'].forEach((w, i) => P.text(w, { x: 200 + i * 200, y: 600, size: 60, at: 0, mode: 'fade' }));   // 3, 4, 5
@@ -21,11 +21,11 @@ const PAGE = (edits) => `ENGINE.visual('p01', (P) => {
 });
 ${edits ? `ENGINE.edits('p01', ${JSON.stringify(edits)});\n` : ''}`;
 
-async function built(edits) {
+async function built(edits, before) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'frametell-edits-'));
   try {
     createProject(dir, { title: 'Edits', lang: 'en' });
-    fs.writeFileSync(path.join(dir, 'pages/p01.js'), PAGE(edits));
+    fs.writeFileSync(path.join(dir, 'pages/p01.js'), PAGE(edits, before));
     const browser = await chromium.launch({ executablePath: findChrome() });
     try {
       const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
@@ -48,7 +48,8 @@ async function built(edits) {
         const words = (n) => [...document.querySelectorAll(`[data-page="p01"] [data-item="${n}"]`)].filter((e) => !e.parentElement.closest(`[data-item="${n}"]`) && getComputedStyle(e).display !== 'none')
           .map((e) => e.textContent).join('').replace(/\s+/g, ' ').trim();
         const order = [...document.querySelectorAll('[data-page="p01"] .cam svg.ink > [data-item]')].map((e) => e.dataset.item);
-        return { items: [1, 2, 3, 4, 5, 6, 7].map(box), words: [1, 3, 4, 6].map(words), order, errors };
+        const fps = Object.fromEntries([...document.querySelectorAll('[data-page="p01"] [data-fp]')].map((e) => [e.dataset.item, e.dataset.fp]));
+        return { items: [1, 2, 3, 4, 5, 6, 7, 8].map(box), words: [1, 3, 4, 6].map(words), order, fps, orphans: ENGINE.orphans('p01'), errors };
       }, errors);
     } finally { await browser.close(); }
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
@@ -57,7 +58,7 @@ async function built(edits) {
 test('edits: every thing a page draws is numbered by its code\'s order, the same on each build', async () => {
   const a = await built(null), b = await built(null);
   assert.deepEqual(a.errors, []);
-  assert.ok(a.items.every(Boolean), 'all seven things are drawn and numbered');
+  assert.ok(a.items.slice(0, 7).every(Boolean), 'all seven things are drawn and numbered');
   assert.deepEqual(a.items, b.items);
   assert.deepEqual(a.words, ['Title words', 'a', 'b', '42']);
 });
@@ -83,4 +84,22 @@ test('edits: a thing is moved, scaled, hidden or reworded by its number; the res
   assert.ok(b4.shown && b6);
   // a moved thing keeps its place among the others: what was drawn after it is still over it
   assert.deepEqual(after.order, before.order);
+});
+
+test('edits: an edit names its thing by what it is too, so it follows it when the page later draws other things first', async () => {
+  const plain = await built(null);
+  // what each thing is: its call, its code's words, which of those it is
+  assert.equal(plain.fps[3], 'text|a|0');
+  assert.equal(plain.fps[2], 'box||0');
+  const edits = { 4: { fp: 'text|b|0', dx: 0, dy: 100, ox: 0, oy: 0 }, 7: { fp: 'box||1', hidden: true }, 9: { fp: 'text|gone|0', hidden: true } };
+  const same = await built(edits);
+  // the page changed: a word drawn before everything (each thing's number is one more now)
+  const later = await built(edits, "\n  P.text('new', { x: 50, y: 900, at: 0, mode: 'fade' });");
+  assert.deepEqual(same.orphans, [9], 'a thing that is not there any more: its edit is an orphan');
+  assert.deepEqual(later.orphans, [9]);
+  assert.equal(same.items[3].y - plain.items[3].y, 100, 'b moved');
+  assert.equal(later.items[4].y - plain.items[3].y, 100, 'b moved still, now the 5th thing');
+  assert.equal(same.items[6], null, 'the second box hidden');
+  assert.equal(later.items[7], null, 'the second box hidden still, now the 8th thing');
+  assert.ok(later.items[6], 'the thing now 7th is not hidden');
 });
