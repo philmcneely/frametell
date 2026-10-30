@@ -25,8 +25,9 @@ export type FeedItem = In & (
   | { kind: 'revised'; key: string; pages: Ev<'revised'>['pages']; at: number }
   /** this film's own components being written (one line, shown as the run's `kit` stands now) */
   | { kind: 'kit'; key: string; at: number }
-  /** the film's generated pictures after the storyboard (one line, shown as the run's `pictures` stand now) */
-  | { kind: 'pictures'; key: string; at: number }
+  /** the film's generated pictures after the storyboard (one line, shown as the run's `pictures` stand now); `ids`: a
+   *  change's line, the pictures it drew again (shown where the change is, not only up in the first line) */
+  | { kind: 'pictures'; key: string; at: number; ids?: string[] }
   /** the first page drawn alone, for the person to confirm the look before the rest (one per time it is shown: only the
    *  latest can be answered); `answer`: what they said, once the film moved on from it */
   | { kind: 'first_page'; key: string; page: string; answer?: 'go' | 'change'; at: number; /** when it goes on by itself */ goOnAt?: number; /** it did: nobody answered in time */ auto?: boolean }
@@ -308,8 +309,15 @@ function step(v: RunView, e: LoggedEvent): RunView {
         note: e.status === 'drawing' ? e.note : old?.note, detail: e.status === 'failed' ? e.detail : undefined,
       };
       r.pictures = old ? r.pictures.map((x) => (x.id === e.id ? p : x)) : [...r.pictures, p];
-      // one line for all of them, where the first is heard of
-      if (!r.feed.some((f) => f.kind === 'pictures')) push({ kind: 'pictures', key, at });
+      // one line for all of them, where the first is heard of; a picture drawn again after the person last spoke gets a
+      // line of its own there (their change's), which the pictures that change draws join
+      const line = r.feed.map((f) => f.kind === 'pictures').lastIndexOf(true), said = r.feed.map((f) => f.kind === 'user').lastIndexOf(true);
+      if (line < 0) push({ kind: 'pictures', key, at });
+      else if (old && e.status === 'drawing' && said > line) push({ kind: 'pictures', key, at, ids: [e.id] });
+      else {
+        const f = r.feed[line] as Extract<FeedItem, { kind: 'pictures' }>;
+        if (f.ids && !f.ids.includes(e.id)) r.feed = r.feed.map((x, j) => (j === line ? { ...f, ids: [...f.ids!, e.id] } : x));
+      }
       return r;
     }
     // the first page waits for the person, as the storyboard did; shown again after a change (or a picture drawn again)

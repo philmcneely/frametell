@@ -88,6 +88,8 @@ const en: typeof zh = {
     drawing: (v) => `Drawing the pictures (${v.done}/${v.n})`,
     done: (v) => `${v.n} ${v.n === 1 ? 'picture is' : 'pictures are'} ready, placed on the pages that use them`,
     someFailed: (v) => `${v.done} ${v.done === 1 ? 'picture' : 'pictures'} drawn; ${v.failed} couldn’t be, so the pages draw those parts themselves`,
+    redrawing: (v) => `Redrawing the ${v.n === 1 ? 'picture' : 'pictures'} as you asked (${v.done}/${v.n})`,
+    redrawn: (v) => `${v.n === 1 ? 'The picture was' : `${v.n} pictures were`} redrawn as you asked`,
     failedTile: 'Couldn’t draw it',
     redraw: 'Redraw',
     redrawOf: 'Redraw “{what}”',

@@ -334,7 +334,8 @@ function KitLine({ run }: { run: RunView }) {
 
 /** the film's generated pictures after the storyboard: each one small, drawn side by side; while the first page waits,
  *  and on a finished film, each can be drawn again, with a word on what to change */
-function PicturesLine({ run, project }: { run: RunView; project: ProjectView }) {
+/** the film's pictures; `ids`: only those a change drew again, in its own line */
+function PicturesLine({ run, project, ids }: { run: RunView; project: ProjectView; ids?: string[] }) {
   useT();
   const [light, setLight] = useState<number>();
   const [editing, setEditing] = useState<string>();
@@ -342,7 +343,7 @@ function PicturesLine({ run, project }: { run: RunView; project: ProjectView }) 
   const [sending, setSending] = useState(false);
   const [failed, setFailed] = useState<string>();
   const plan = useMemo(() => plannedPictures(run.storyboard), [run.storyboard]);
-  const pics = run.pictures;
+  const pics = useMemo(() => (ids ? run.pictures.filter((p) => ids.includes(p.id)) : run.pictures), [run.pictures, ids]);
   if (!pics.length) return null;
   // a picture whose redraw failed keeps its last file: it counts as drawn
   const done = pics.filter((p) => p.status === 'done' || (p.status === 'failed' && p.file)).length, bad = pics.filter((p) => p.status === 'failed' && !p.file).length;
@@ -362,9 +363,9 @@ function PicturesLine({ run, project }: { run: RunView; project: ProjectView }) 
   };
   return (
     <div className="text-[12.5px] leading-relaxed" aria-label={t('conversation.pictures.label')}>
-      {busy ? <p className="flex items-center gap-1.5 text-accent-ink"><Loader2 size={13} className="animate-spin" aria-hidden /> {t('conversation.pictures.drawing', { done, n: Math.max(plan.length, pics.length) })}</p>
+      {busy ? <p className="flex items-center gap-1.5 text-accent-ink"><Loader2 size={13} className="animate-spin" aria-hidden /> {ids ? t('conversation.pictures.redrawing', { done, n: pics.length }) : t('conversation.pictures.drawing', { done, n: Math.max(plan.length, pics.length) })}</p>
         : bad ? <p className="text-ink-3">{t('conversation.pictures.someFailed', { done, failed: bad })}</p>
-        : <p className="flex items-center gap-1.5 text-jade"><Check size={13} aria-hidden /> {t('conversation.pictures.done', { n: done })}</p>}
+        : <p className="flex items-center gap-1.5 text-jade"><Check size={13} aria-hidden /> {ids ? t('conversation.pictures.redrawn', { n: done }) : t('conversation.pictures.done', { n: done })}</p>}
       <ul className="mt-2 flex flex-wrap gap-2">
         {pics.map((p) => {
           const src = pictureUrl(project, p), drawing = p.status === 'drawing';
@@ -494,7 +495,7 @@ function ExportLine({ it, project }: { it: Extract<FeedItem, { kind: 'export' }>
 
 // ── the conversation ────────────────────────────────────────────────────────────────────────────────────────────────
 
-type Block = { kind: 'chapter'; stage: Stage; items: FeedItem[]; key: string; latest?: boolean } | { kind: 'work'; items: FeedItem[]; key: string } | { kind: 'item'; item: FeedItem };
+type Block = { kind: 'chapter'; stage: Stage; items: FeedItem[]; key: string; latest?: boolean } | { kind: 'work'; items: FeedItem[]; key: string; answer?: boolean } | { kind: 'item'; item: FeedItem };
 
 /** group the feed into stage chapters; user messages, notes and outcomes stay in the flow between them */
 function blocks(feed: FeedItem[]): Block[] {
@@ -512,6 +513,12 @@ function blocks(feed: FeedItem[]): Block[] {
     if (last?.kind === 'chapter' && last.stage === stage) last.items.push(it);
     else out.push({ kind: 'chapter', stage, items: [it], key: `c-${it.key}` });
   }
+  // the director read a message and changed nothing (a question answered, thanks): the film is ready again straight
+  // after, with no picture, page or word redrawn. What it said is a reply, not a plan
+  out.forEach((b, i) => {
+    const next = out[i + 1];
+    if (b.kind === 'work' && next?.kind === 'item' && (next.item.kind === 'ready' || next.item.kind === 'done')) b.answer = true;
+  });
   // a stage can run again (a revision redraws pages, a new voice narrates again): only its latest chapter is live,
   // earlier ones are history. A run that has started but said nothing yet has no chapter of its own: the old one must
   // not take its spinner.
@@ -548,9 +555,16 @@ function RevisedCard({ it, onOpen }: { it: Extract<FeedItem, { kind: 'revised' }
   );
 }
 
-/** the director planning a change: what it read and decided, folded like a stage */
+/** the director planning a change: what it read and decided, folded like a stage; a reply when it changed nothing */
 function WorkChapter({ b, live }: { b: Extract<Block, { kind: 'work' }>; live: boolean }) {
   useT();
+  const said = b.items.filter((i): i is Extract<FeedItem, { kind: 'say' }> => i.kind === 'say');
+  if (b.answer && !live) return (
+    <div className="flex items-start gap-2.5">
+      <span className="mt-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-paper ring-1 ring-line" aria-hidden><Crest size={11} /></span>
+      <div className="min-w-0 flex-1 space-y-3">{said.map((it) => <Said key={it.key} text={it.text} />)}</div>
+    </div>
+  );
   return (
     <section aria-label={t('conversation.plan.title')}>
       <header className="flex items-center gap-2.5">
@@ -559,7 +573,7 @@ function WorkChapter({ b, live }: { b: Extract<Block, { kind: 'work' }>; live: b
         <span className={`truncate text-[12.5px] ${live ? 'text-accent-ink' : 'text-ink-3'}`}>{live ? t('conversation.plan.looking') : ''}</span>
       </header>
       <div className="ml-2.5 mt-2.5 space-y-3 border-l border-line pb-1 pl-[22px]">
-        {b.items.filter((i): i is Extract<FeedItem, { kind: 'say' }> => i.kind === 'say').map((it) => <Said key={it.key} text={it.text} />)}
+        {said.map((it) => <Said key={it.key} text={it.text} />)}
         {live && <Process items={b.items} />}
       </div>
     </section>
@@ -636,7 +650,7 @@ function Chapter({ b, run, project, onSelectPage, onPlayPage, selected }: { b: E
           if (it.kind === 'say') return <Said key={it.key} text={it.text} />;
           if (it.kind === 'note') return <p key={it.key} className="text-[13px] leading-relaxed text-ink-2 animate-rise">{it.text}</p>;
           if (it.kind === 'kit') return <KitLine key={it.key} run={run} />;
-          if (it.kind === 'pictures') return <PicturesLine key={it.key} run={run} project={project} />;
+          if (it.kind === 'pictures') return <PicturesLine key={it.key} run={run} project={project} ids={it.ids} />;
           if (it.kind === 'check') return it.reds + it.yellows === 0
             ? <p key={it.key} className="flex items-center gap-1.5 text-[12.5px] text-jade"><Check size={13} aria-hidden /> {t('conversation.chapter.checkPassed')}</p>
             : <p key={it.key} className="text-[12.5px] leading-relaxed text-ink-3">{t('conversation.chapter.checkIssues', { reds: it.reds, yellows: it.yellows })}</p>;
@@ -749,7 +763,7 @@ export function Conversation({ run, project, onSelectPage, onPlayPage, selected,
             if (it.kind === 'export') return <ExportLine key={it.key} it={it} project={project} />;
             if (it.kind === 'revised') return <RevisedCard key={it.key} it={it} onOpen={onSelectPage} />;
             // first heard of on a finished film (a picture drawn again): a line of its own
-            if (it.kind === 'pictures') return <PicturesLine key={it.key} run={run} project={project} />;
+            if (it.kind === 'pictures') return <PicturesLine key={it.key} run={run} project={project} ids={it.ids} />;
             if (it.kind === 'note') return <p key={it.key} className="flex items-start gap-2.5 text-[13px] leading-relaxed text-ink-2"><span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-paper ring-1 ring-line"><Crest size={11} /></span>{it.text}</p>;
             return null;
           })}

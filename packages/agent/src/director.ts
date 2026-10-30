@@ -1807,11 +1807,13 @@ export class Director {
     // else (the words, a generated picture, more than those pages, no change at all), or a kind the decision model isn't
     // sure of, is planned first. A style drawn in pictures has no page agent (its pages are written from the scenes):
     // always planned (seen: four asks to fix a face went straight to their page and changed nothing)
-    const direct = !this.pictureStyle()?.led && named.length > 0 && named.length <= 2 && await this.changeKind(request) === 'look';
+    const kind = await this.changeKind(request);
+    const direct = !this.pictureStyle()?.led && named.length > 0 && named.length <= 2 && kind === 'look';
     const storyboard = this.project.read('storyboard.json');
     let plan: RevisionPlan | undefined = direct ? named.map((id) => ({ id, note: request })) : undefined;
     if (!plan) {
-      this.emit({ type: 'note', text: this.say('收到，我先看看要改哪几页', 'Got it. Let me see which pages this touches') });
+      // a question or thanks is answered, not looked into as a change
+      if (kind !== 'talk') this.emit({ type: 'note', text: this.say('收到，我先看看要改哪几页', 'Got it. Let me see which pages this touches') });
       const got = await this.planRevision(request, named);
       if ('why' in got) this.fail('pages', got.why);
       plan = got.plan;

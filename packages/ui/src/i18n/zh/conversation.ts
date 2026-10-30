@@ -89,6 +89,8 @@ export default {
     drawing: (v: { done: number; n: number }) => `正在画配图（${v.done}/${v.n}）`,
     done: (v: { n: number }) => `${v.n} 张配图画好了，用到它们的页面会直接放进去`,
     someFailed: (v: { done: number; failed: number }) => `配图画好了 ${v.done} 张，${v.failed} 张没画成，那几处由页面自己画`,
+    redrawing: (v: { done: number; n: number }) => `正在按你说的重画配图（${v.done}/${v.n}）`,
+    redrawn: (v: { n: number }) => `${v.n} 张配图按你说的重画好了`,
     failedTile: '没画成',
     redraw: '重画',
     redrawOf: '重画“{what}”',
