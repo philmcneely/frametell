@@ -26,6 +26,75 @@
 
   function visual(id, fn) { visuals[id] = fn; }
 
+  // ── hand edits ───────────────────────────────────────────
+  // What a page draws is a list of things, each one call its code makes to the builder (P.text, P.box, a kit's card),
+  // numbered 1, 2, 3… in the order the code makes them: the same every time the page is built. An editor names a thing
+  // by that number, and what was done to it by hand is written after the page's code as ENGINE.edits('<page>', {…}):
+  //   { "<n>": { dx, dy, scale, ox, oy, hidden, text: { "<j>": "words" } } }
+  // moved by dx/dy and scaled by `scale` about (ox, oy) (stage px), taken off the picture, or its j-th words (its
+  // calls to P.text, from 0) shown as others. The page's code is never changed: the edits are laid over what it draws.
+  // Each thing's outermost elements carry data-item="<n>" and data-call (the builder's call that drew it: text, box…).
+  const edits = {};
+  function editsOf(id, map) { edits[id] = map && typeof map === 'object' ? map : {}; }
+  /** the builder's helpers that tell a time, make a layer, move the camera or work for other calls: not things */
+  const NOT_THINGS = new Set(['constructor', 'c', 'cw', 'ce', 'seed', 'act', 'tick', 'handle', 'ro', 'shapeOf', 'texture', 'layer', 'cam', 'push', 'pan', 'slam', 'shake', 'back']);
+  let building = null;   // the page being built: { id, n, watch }
+  let thing = null;      // the thing being drawn: { n, j, ed }
+  let counted = false;
+  /** every drawing call of the builder (the runtime's, a style's kit, a lib's: all are on its prototype by the first build)
+   *  counted when a page's code makes it, the words of an edited thing put in */
+  function countThings() {
+    if (counted) return;
+    counted = true;
+    const B = Builder.prototype;
+    for (const name of Object.getOwnPropertyNames(B)) {
+      const d = Object.getOwnPropertyDescriptor(B, name);
+      if (NOT_THINGS.has(name) || !d || typeof d.value !== 'function') continue;
+      const f = d.value;
+      B[name] = function (...args) {
+        if (thing) {
+          if (name === 'text') { const w = thing.ed?.text?.[thing.j++]; if (typeof w === 'string') args[0] = w; }
+          return f.apply(this, args);
+        }
+        if (!building) return f.apply(this, args);
+        const n = ++building.n, ed = edits[building.id]?.[n];
+        building.watch.takeRecords();
+        thing = { n, j: 0, ed };
+        if (name === 'text') { const w = ed?.text?.[thing.j++]; if (typeof w === 'string') args[0] = w; }
+        try { return f.apply(this, args); } finally {
+          const added = building.watch.takeRecords().flatMap((r) => [...r.addedNodes]).filter((x) => x.nodeType === 1);
+          thing = null;
+          place(added, n, ed, name);
+        }
+      };
+    }
+  }
+  const num = (v, or) => (typeof v === 'number' && Number.isFinite(v) ? v : or);
+  /** a thing's outermost elements, numbered; moved or hidden as it was edited. A move puts them, where they were, into
+   *  a group of their own (an SVG <g>, or a stage-sized <div>) that is moved: the engine's own animation of each goes on
+   *  inside it, and what was drawn over or under it still is */
+  function place(added, n, ed, call) {
+    const tops = added.filter((x) => x.isConnected && !added.some((o) => o !== x && o.contains(x)));
+    for (const x of tops) { x.setAttribute('data-item', n); x.setAttribute('data-call', call); }
+    if (!ed || !tops.length) return;
+    if (ed.hidden) for (const x of tops) x.style.display = 'none';
+    const dx = num(ed.dx, 0), dy = num(ed.dy, 0), sc = num(ed.scale, 1), ox = num(ed.ox, 0), oy = num(ed.oy, 0);
+    if (!dx && !dy && sc === 1) return;
+    const byParent = new Map();
+    for (const x of tops) { if (!byParent.has(x.parentNode)) byParent.set(x.parentNode, []); byParent.get(x.parentNode).push(x); }
+    for (const [parent, xs] of byParent) {
+      const svg = parent.namespaceURI === 'http://www.w3.org/2000/svg';
+      const g = svg ? document.createElementNS(parent.namespaceURI, 'g') : document.createElement('div');
+      g.setAttribute('data-item', n);
+      g.setAttribute('data-call', call);
+      g.setAttribute('class', 'edited');   // a group that only moves what is in it: an editor looks through it
+      if (svg) g.setAttribute('transform', `translate(${ox + dx} ${oy + dy}) scale(${sc}) translate(${-ox} ${-oy})`);
+      else Object.assign(g.style, { position: 'absolute', inset: '0', transformOrigin: `${ox}px ${oy}px`, transform: `translate(${dx}px, ${dy}px) scale(${sc})` });
+      parent.insertBefore(g, xs[0]);
+      for (const x of xs) g.appendChild(x);
+    }
+  }
+
   // ── optional header: META.course · META.no | current section (no page counter) ──
   function buildChrome(parent) {
     const el = h('div', 'chrome', null, parent);
@@ -131,9 +200,13 @@
       if (!only || only.has(pg.id)) {
         const fn = visuals[pg.id];
         PV.colorPage = pg.id;
+        countThings();
+        const watch = new MutationObserver(() => {});
+        watch.observe(root, { childList: true, subtree: true });
+        building = { id: pg.id, n: 0, watch };
         try { if (loadErrors[pg.id]) throw loadErrors[pg.id]; if (fn) fn(B, pg); else B.title(pg.title); }
         catch (e) { cam.innerHTML = ''; hud.innerHTML = ''; obj.sh.acts.length = 0; obj.sh.ticks.length = 0; fail(obj, 'build', e); }
-        finally { PV.colorPage = undefined; }
+        finally { PV.colorPage = undefined; building = null; thing = null; watch.disconnect(); }
       }
     }
     chrome = (SCRIPT.META || {}).chrome === true ? buildChrome(frame) : null;   // META.chrome: true → series header (META.course · META.no | section)
@@ -185,5 +258,5 @@
     for (const fn of window.FRAME_HOOKS || []) fn(t, layout);   // extras can draw things that live across pages (a host character)
   }
 
-  window.ENGINE = { visual, init, renderAt, get layout() { return layout; }, get pages() { return pages; }, get errors() { return errors; }, get colors() { return [...PV.unknownColors].map(([page, names]) => ({ page, names: [...names] })); }, source: (id) => visuals[id]?.toString() };
+  window.ENGINE = { visual, edits: editsOf, init, renderAt, get layout() { return layout; }, get pages() { return pages; }, get errors() { return errors; }, get colors() { return [...PV.unknownColors].map(([page, names]) => ({ page, names: [...names] })); }, source: (id) => visuals[id]?.toString() };
 })();
