@@ -689,7 +689,8 @@ export class Director {
     const style = this.pictureStyle()!, tl = await this.project.timeline();
     const lines = tl.pages.map((p) => ({ page: p.id, lines: p.cues.map((c) => c.text) }));
     const cues = Object.fromEntries(tl.pages.map((p) => [p.id, p.cues.length])), ids = tl.pages.map((p) => p.id);
-    await this.send(s, picturePlanNote(style, this.own(), lines) + replyNote(this.o.brief.replyLang, this.o.brief.lang), undefined, PLAN_THINKING);
+    const designs = picturePlan(this.project.storyboard().look, style, this.own()).filter((p) => p.base).length;
+    await this.send(s, picturePlanNote(style, this.own(), lines, designs) + replyNote(this.o.brief.replyLang, this.o.brief.lang), undefined, PLAN_THINKING);
     for (let ask = 0; ; ask++) {
       let issues: string[];
       try { issues = pictureIssues(this.project.storyboard().look, ids, style, this.own(), cues); } catch (e) { issues = [`storyboard.json can't be read: ${(e as Error).message}`]; }

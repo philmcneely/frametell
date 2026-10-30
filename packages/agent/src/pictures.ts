@@ -139,7 +139,7 @@ export function pictureIssues(look: unknown, pageIds: string[], style: PictureSt
   const out: string[] = [];
   const ids = new Set(pageIds), seen = new Map<string, Record<string, unknown>>(), bases = new Set<string>();
   let scenes = 0;
-  if (list.length > style.max) out.push(`\`look.pictures\` lists ${list.length} pictures: this style allows ${style.max}; keep the ones code would draw worst`);
+  if (list.length > style.max) out.push(`\`look.pictures\` lists ${list.length} pictures: this style allows ${style.max}; ${style.led ? 'give each scene more lines, spread evenly over the whole film, every page still with one' : 'keep the ones code would draw worst'}`);
   list.forEach((x, i) => {
     const o = (x && typeof x === 'object' ? x : {}) as Record<string, unknown>;
     const id = typeof o.id === 'string' ? o.id : '';
@@ -317,10 +317,11 @@ export const pictureCall = (p: Picture & PicturePlan) => {
 
 /** For the director at the storyboard (and at a change): what pictures it may ask for. '' when the style draws everything
  *  in code. `own`: the person's files in the film (assets/brand/…, assets/user/…) */
-export function picturePlanNote(style: PictureStyle | undefined, own: string[] = [], lines?: { page: string; lines: string[] }[] | 'script'): string {
+/** `designs`: a style drawn in pictures, at its scenes: how many designs the film already has (they count in its max) */
+export function picturePlanNote(style: PictureStyle | undefined, own: string[] = [], lines?: { page: string; lines: string[] }[] | 'script', designs = 0): string {
   if (!style) return '';
   const raster = own.filter((f) => OWN.test(f)), svg = own.filter((f) => OWN_SVG.test(f));
-  if (style.led) return ledPlanNote(style, raster, lines);
+  if (style.led) return ledPlanNote(style, raster, lines, designs);
   return `This style may also use up to ${style.max} generated pictures, listed in \`look.pictures\`: an image model draws them in the style's own look, and the pages place them and draw everything else on top in code.
 \`"pictures": [{ "id": "whale", "kind": "object", "what": "a humpback whale gliding to the left, mouth closed, long white flippers", "shape": "wide", "pages": ["p02", "p05"] }]\`
 - Ask for one only where code would look poor: ${style.kinds.map((k) => ({ scene: 'an illustrated place (`scene`, full frame)', object: 'a real thing such as an animal, a machine or a plant (`object`, cut out on a transparent ground)', character: 'a person or a creature (`character`, cut out)', texture: 'a ground of paper or grain (`texture`)' })[k]).join(', ')}. Never for text, numbers, labels, charts, diagrams, arrows or anything whose parts must move one by one: a picture only moves as a whole (it slides, grows, fades, is revealed), so what the narration points at part by part stays in code.
@@ -332,10 +333,20 @@ export function picturePlanNote(style: PictureStyle | undefined, own: string[] =
 - When the person has their own character, mascot, product or person in mind (the brief or the brand names one), it is theirs on screen, never a stand-in: ${raster.length ? `when one of their pictures shows it (${raster.join(', ')}), the picture of it gets \`"from": "<that file>"\`, so it is drawn from theirs and stays recognisably theirs in the film's look (its other poses are \`like\` it)` : 'describe it in `what` as they describe it'}.${svg.length ? ` Their SVGs (${svg.join(', ')}) are placed as they are with P.img and need no picture.` : ''}`;
 }
 
+/** how often a style drawn in pictures shows a new scene: one every two or three lines (6–8 s), or, in a film too long
+ *  for its max at that pace, one every `every` lines, spread evenly so the end is not left bare */
+export function sceneRhythm(style: PictureStyle, lines: { page: string; lines: string[] }[] | 'script', designs = 0): string {
+  const why = 'a viewer needs a moment to take each picture in, its words included, so a scene holds while the narration explains it, and the next comes when the story moves on';
+  const total = Array.isArray(lines) ? lines.reduce((n, p) => n + p.lines.length, 0) : 0;
+  const room = Math.max(1, style.max - designs), every = Math.ceil(total / room);
+  if (every <= 3) return `- One scene for every two or three lines above, about every 6–8 seconds of narration (a 60-second film has 8–10): ${why}. A long line can have one of its own. A page's first scene is on its line 0. At most ${style.max} in all${designs ? `, the designs included (room for ${room} scenes)` : ''}.`;
+  return `- This film is long: its ${total} lines leave room for ${room} scenes (${style.max} pictures in all${designs ? ', the designs included' : ''}), so one scene for every ${every} lines, about ${every}–${every + 1} lines each, spread evenly from the first page to the last: never crowded at the start and thin at the end. Every page has at least one, on its line 0; a page with more lines has more scenes. ${why[0].toUpperCase()}${why.slice(1)}; here each holds longer, so make each a full moment with enough in it to look at while it is explained.`;
+}
+
 /** a style drawn in pictures. At the storyboard (`lines` none): only its designs; its scenes are planned once the
  *  narration is written, against its real lines (`lines`: each page's lines, numbered; 'script': a change, whose
  *  planner reads them in script.js), one for every line or two */
-function ledPlanNote(style: PictureStyle, raster: string[], lines?: { page: string; lines: string[] }[] | 'script'): string {
+function ledPlanNote(style: PictureStyle, raster: string[], lines?: { page: string; lines: string[] }[] | 'script', designs = 0): string {
   const sheet = style.cast ? `- First come the film's designs (\`base\`), on no page (\`"pages": []\`): each is drawn as a picture of its own before any scene, and every scene is drawn from the designs it shows, so they look the same in every scene. Up to ${BASES_MAX}:
   - \`"base": "character"\`: one for each person or creature who appears in more than one scene, described as they always look (age, build, face, hair, beard, glasses, clothes and their colours, one mark that can't be mistaken; a creature's shape, colours and markings), and no two alike. A person who changes in a way the story needs (young and old, in armour and in rags) has one design for each look, its id saying which (\`dantes-young\`, \`dantes-prisoner\`).
   - \`"base": "place"\`: a place two or more scenes happen in (a hall, a tent, a ship's deck), as it always looks. \`"base": "prop"\`: an object that matters in two or more scenes (a jade cup, a letter, the product).
@@ -348,7 +359,7 @@ ${style.cast ? `\`"pictures": [{ "id": "sam", "kind": "scene", "base": "characte
   return `${lines === 'script' ? `This film is drawn in pictures: its scenes are in \`look.pictures\` in storyboard.json, after ${style.cast ? 'its designs' : 'the first'}, each on the line of its page it starts on (\`cue\`: a page's lines are its cues in script.js, 0 for the first). A change that changes a page's lines plans its scenes again to fit them; a change to what a scene shows changes its \`what\`${style.cast ? ' (and its `uses`); a change to how a person, place or prop looks changes its design, and every scene that uses it is drawn again' : ''}.` : `Now plan this film's scenes from its narration: add them to \`look.pictures\` in storyboard.json, after ${style.cast ? 'its designs (keep them first and as they are; a scene that needs one more, a person in a new look or a place that recurs, adds it at the end of the designs)' : 'what is there'}, and stop.
 ${lines.map((p) => `${p.page}:\n${p.lines.map((l, i) => `  ${i}. ${l}`).join('\n')}`).join('\n')}`}
 \`{ "id": "p01-a", "kind": "scene", "what": "Sam at his desk cracking his knuckles, a wall clock reading 9:50 behind him, wide shot", "pages": ["p01"], "cue": 0, "focus": [0.45, 0.4]${style.cast ? ', "uses": ["sam"]' : ''} }\`
-- One scene for every two or three lines above, about every 6–8 seconds of narration (a 60-second film has 8–10): a viewer needs a moment to take each picture in, its words included, so a scene holds while the narration explains it, and the next comes when the story moves on. A long line can have one of its own. A page's first scene is on its line 0. At most ${style.max} in all. Name each by its page and order (\`p02-a\`, \`p02-b\`), each on its page alone, each a moment of its own (a new action, a close-up, a reaction, the next point lettered in), never the same picture again.
+${sceneRhythm(style, lines, designs)} Name each by its page and order (\`p02-a\`, \`p02-b\`), each on its page alone, each a moment of its own (a new action, a close-up, a reaction, the next point lettered in), never the same picture again.
 - \`cue\`: the number of the line above where it starts; it is drawn in over its first moments and then held, whole, for the lines it covers. \`focus\`: [x, y] as shares of the frame, where its drawing starts: on what the line names first, the heading when the scene opens on its words (\`[0.3, 0.1]\` for a heading at the top left), else the face of the person it is about. Nobody writes the pages: each is drawn from these fields alone.
 ${style.cast ? `- \`uses\`: the ids of the designs the scene shows (each person in the look they have at that moment, its place, its prop), at most ${BASE_USES}, the most important first: it is drawn from them. A scene that shows none has no \`uses\`.
 ` : ''}- \`what\` is one illustrated moment, written in English whatever the film's language (the image model reads English best): who is in it (by their designs' names${style.cast ? '; someone with no design described in full' : ''}), where, what they do and their expression, the props, and one clear focal subject; a wide, a medium or a close shot, varied from scene to scene. Never the style, colours or a camera move: those are added for you.

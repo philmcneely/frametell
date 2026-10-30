@@ -316,6 +316,14 @@ test('a style drawn in pictures: its designs at the storyboard, its scenes once 
   assert.match(words, /Never the narration's sentences and never the scene's description/);
   assert.match(scenes, /`uses`: the ids of the designs the scene shows/);
   assert.match(picturePlanNote(LED, [], 'script'), /a page's lines are its cues in script\.js/);
+  // a long film: its lines are shared out over the room its max leaves after the designs, evenly to the end
+  const long = Array.from({ length: 20 }, (_, i) => ({ page: `p${String(i + 1).padStart(2, '0')}`, lines: Array.from({ length: 8 }, (_, j) => `Line ${j}.`) }));
+  const spread = picturePlanNote({ ...LED, max: 40 }, [], long, 5);
+  assert.match(spread, /its 160 lines leave room for 35 scenes \(40 pictures in all, the designs included\), so one scene for every 5 lines/);
+  assert.match(spread, /never crowded at the start and thin at the end/);
+  assert.match(spread, /Every page has at least one, on its line 0/);
+  assert.doesNotMatch(spread, /One scene for every two or three lines/);
+  assert.match(picturePlanNote({ ...LED, max: 40 }, [], long.slice(0, 4), 5), /One scene for every two or three lines above.*the designs included \(room for 35 scenes\)/);
   // a film from before designs, with one cast sheet, is still well formed
   const ok = { pictures: [{ id: 'cast', kind: 'scene', what: 'Sam, a salesman with curly hair; Priya, a CHRO', pages: [] }, { id: 'p01-a', kind: 'scene', what: 'Sam at his desk, wide shot', pages: ['p01'], cue: 0, focus: [0.4, 0.3] }] };
   assert.deepEqual(pictureIssues(ok, ['p01'], LED, [], { p01: 2 }), []);
