@@ -296,12 +296,13 @@ test('a cut-out with a ground behind it, or a sticker\'s white rim, is told apar
 
 const LED: PictureStyle = { kinds: ['scene', 'character'], max: 30, quality: 'medium', prefix: 'Flat vector office comedy', avoid: '', led: true, cast: true };
 
-test('a style drawn in pictures: its cast sheet at the storyboard, its scenes once the narration is written, line by line', () => {
-  // the storyboard: the cast sheet only
+test('a style drawn in pictures: its designs at the storyboard, its scenes once the narration is written, line by line', () => {
+  // the storyboard: the designs only
   const note = picturePlanNote(LED);
   assert.match(note, /drawn in pictures/);
   assert.match(note, /planned after the narration is written, line by line/);
-  assert.match(note, /cast sheet, id `cast`, on no page/);
+  assert.match(note, /First come the film's designs \(`base`\), on no page/);
+  assert.match(note, /one design for each look/);
   assert.match(note, /has no `kit`/);
   assert.doesNotMatch(note, /3–6 pictures usually/);
   // after the narration: its real lines, numbered, one scene for every line or two
@@ -313,7 +314,9 @@ test('a style drawn in pictures: its cast sheet at the storyboard, its scenes on
   assert.match(scenes, /Lettering inside a scene only for a short sign/);
   const words = picturePlanNote({ ...LED, words: true }, [], lines);
   assert.match(words, /Never the narration's sentences and never the scene's description/);
+  assert.match(scenes, /`uses`: the ids of the designs the scene shows/);
   assert.match(picturePlanNote(LED, [], 'script'), /a page's lines are its cues in script\.js/);
+  // a film from before designs, with one cast sheet, is still well formed
   const ok = { pictures: [{ id: 'cast', kind: 'scene', what: 'Sam, a salesman with curly hair; Priya, a CHRO', pages: [] }, { id: 'p01-a', kind: 'scene', what: 'Sam at his desk, wide shot', pages: ['p01'], cue: 0, focus: [0.4, 0.3] }] };
   assert.deepEqual(pictureIssues(ok, ['p01'], LED, [], { p01: 2 }), []);
   // at the storyboard a scene is not held to lines it doesn't have yet
@@ -324,8 +327,8 @@ test('a style drawn in pictures: its cast sheet at the storyboard, its scenes on
   assert.match(loose, /p01-a needs `focus`/);
   assert.match(loose, /p03 has no scene/);
   assert.match(pictureIssues({ pictures: [ok.pictures[0], { ...ok.pictures[1], cue: 2 }] }, ['p01'], LED, [], { p01: 2 }).join('\n'), /p01-a is on line 2 of p01, which has 2 lines \(0–1\)/);
-  assert.match(pictureIssues({ pictures: [ok.pictures[1]] }, ids, LED).join('\n'), /the first picture is the film's cast sheet, id "cast"/);
-  assert.match(pictureIssues({ pictures: [{ ...ok.pictures[0], pages: ['p01'] }] }, ids, LED).join('\n'), /the cast sheet is on no page/);
+  assert.match(pictureIssues({ pictures: [ok.pictures[1]] }, ids, LED).join('\n'), /the first pictures are the film's designs/);
+  assert.match(pictureIssues({ pictures: [{ ...ok.pictures[0], pages: ['p01'] }] }, ids, LED).join('\n'), /cast is a design, on no page/);
   const [sheet, scene] = picturePlan(ok, LED);
   assert.match(picturePrompt(LED, sheet, [], 'none'), /character model sheet: every character the subject names standing side by side/);
   assert.match(picturePrompt(LED, scene, [], 'cast'), /A full-frame illustration[\s\S]*reference image is this film's cast sheet/);
@@ -375,4 +378,78 @@ test('a page of a style drawn in pictures is written from its scenes\' cues and 
   assert.match(close[1], /at: P\.c\(1, 1\.3\d\), dur: 2\.5,/);
   // a page with no scene of its own holds the last one before it
   assert.match(ledPage('p03', [], [0, 3], 6, scene('p02-b', 2, [0.6, 0.2])), /P\.scene\('assets\/gen\/p02-b-0123456789\.png', \{ at: 0, dur: 0\.3/);
+});
+
+const DESIGNS = [
+  { id: 'liu-bang', kind: 'scene', base: 'character', what: 'Liu Bang, a lord in his 50s, long black beard, a dark red robe', pages: [] },
+  { id: 'xiang-yu', kind: 'scene', base: 'character', what: 'Xiang Yu, a general in his 20s, black armour, a crimson cloak', pages: [] },
+  { id: 'tent', kind: 'scene', base: 'place', what: 'the great tent at Hongmen, red pillars, a low table, lamps', pages: [] },
+];
+
+test('a film with designs: each person, place and prop drawn on its own first, each scene from the ones it shows', () => {
+  const note0 = () => picturePlanNote(LED);
+  const plan = [...DESIGNS,
+    { id: 'p01-a', kind: 'scene', what: 'Liu Bang bows before Xiang Yu in the tent', pages: ['p01'], cue: 0, focus: [0.4, 0.3], uses: ['liu-bang', 'xiang-yu', 'tent', 'nobody'] },
+    { id: 'p02-a', kind: 'scene', what: 'an empty road at dawn', pages: ['p02'], cue: 0, focus: [0.5, 0.5] },
+  ];
+  assert.deepEqual(pictureIssues({ pictures: plan.map((p) => (p.id === 'p01-a' ? { ...p, uses: ['liu-bang', 'xiang-yu', 'tent'] } : p)) }, ['p01', 'p02'], LED, [], { p01: 2, p02: 2 }), []);
+  const [hero, , tent, scene, road] = picturePlan({ pictures: plan }, LED);
+  assert.equal(hero.base, 'character');
+  assert.deepEqual(scene.uses, ['liu-bang', 'xiang-yu', 'tent'], 'only designs listed before it');
+  assert.equal(road.uses, undefined);
+  assert.match(picturePrompt(LED, hero, [], 'none'), /character design sheet of this one character alone[\s\S]*large head-and-shoulders close-up/);
+  assert.match(picturePrompt(LED, tent, [], 'look'), /establishing view of this place alone, empty of people/);
+  assert.match(picturePrompt(LED, tent, [], 'look'), /a design to draw scenes from, not a scene: nothing in it is lettered/);
+  assert.match(note0(), /written in English whatever the film's language/);
+  // a style whose words are in its pictures: a scene that quotes none has none
+  assert.match(picturePrompt({ ...LED, words: true }, road, [], 'look'), /a subject that quotes none is a picture with no words at all/);
+  assert.doesNotMatch(picturePrompt({ ...LED, words: true }, tent, [], 'look'), /a subject that quotes none/);
+  assert.match(picturePrompt(LED, scene, [], 'uses', undefined, [hero, tent]), /reference images are this film's own designs, in this order: 1\. the design of Liu Bang[^;]*; 2\. the place the great tent/);
+  // what goes wrong
+  const issues = (list: object[]) => pictureIssues({ pictures: list }, ['p01', 'p02'], LED, [], { p01: 2, p02: 2 }).join('\n');
+  assert.match(issues([plan[3], ...DESIGNS]), /the first pictures are the film's designs/);
+  assert.match(issues([...DESIGNS, plan[4], { ...DESIGNS[0], id: 'fan-zeng' }]), /fan-zeng is a design listed after a scene/);
+  assert.match(issues([...DESIGNS, plan[3], plan[4]]), /p01-a uses nobody, which is not a design listed before it \(liu-bang, xiang-yu, tent\)/);
+  assert.match(issues([...DESIGNS, { ...DESIGNS[0], id: 'a1' }, { ...DESIGNS[0], id: 'a2' }, { ...plan[3], uses: ['liu-bang', 'xiang-yu', 'tent', 'a1', 'a2'] }, plan[4]]), /p01-a uses 5 designs: at most 4/);
+  assert.match(issues([{ ...DESIGNS[0], base: 'hero' }]), /liu-bang has base "hero"/);
+  assert.match(issues([...DESIGNS, { ...DESIGNS[2], id: 'cup', base: 'prop', pages: ['p01'] }]), /cup is a design, on no page/);
+  assert.match(issues([...DESIGNS, ...Array.from({ length: 6 }, (_, i) => ({ ...DESIGNS[0], id: `d${i}` }))]), /more than 8 designs/);
+});
+
+test('the designs are drawn from the first one\'s look, each scene from the designs it uses, and a design drawn again draws its scenes again', async () => {
+  const f = film({ style: LED, plan: [...DESIGNS,
+    { id: 'p01-a', kind: 'scene', what: 'Liu Bang bows before Xiang Yu in the tent', pages: ['p01'], uses: ['liu-bang', 'xiang-yu', 'tent'] },
+    { id: 'p02-a', kind: 'scene', what: 'Xiang Yu alone, drinking', pages: ['p02'], uses: ['xiang-yu'] },
+    { id: 'p03-a', kind: 'scene', what: 'an empty road at dawn', pages: ['p03'] },
+  ] });
+  await f.d.pictures();
+  assert.equal(f.calls.length, 6);
+  assert.equal(f.calls[0].refs, 0);
+  assert.match(f.calls[0].prompt, /character design sheet/);
+  const designs = f.calls.slice(1).filter((c) => /character design sheet|establishing view/.test(c.prompt));
+  assert.equal(designs.length, 2);
+  for (const c of designs) { assert.equal(c.refs, 1); assert.match(c.prompt, /shows the look of this film/); }
+  const bow = f.calls.find((c) => /Subject: Liu Bang bows/.test(c.prompt))!, alone = f.calls.find((c) => /Subject: Xiang Yu alone/.test(c.prompt))!, road = f.calls.find((c) => /empty road/.test(c.prompt))!;
+  assert.equal(bow.refs, 3);
+  assert.match(bow.prompt, /1\. the design of Liu Bang[^;]*; 2\. the design of Xiang Yu[^;]*; 3\. the place the great tent/);
+  assert.equal(alone.refs, 1);
+  assert.equal(road.refs, 1);
+  assert.match(road.prompt, /shows the look of this film/);
+  // a resumed run draws nothing again
+  f.d.state.pictures = undefined;
+  await f.d.pictures();
+  assert.equal(f.calls.length, 6);
+  // the film is done; Xiang Yu's design is drawn again: so are the two scenes he is in, page 1 is pointed at its new
+  // scene and the export is stale; the road is not drawn again
+  const before = readPictures(f.dir).items;
+  const old = before.find((p) => p.id === 'p01-a')!;
+  fs.writeFileSync(path.join(f.dir, 'pages/p01.js'), `P.scene('assets/gen/${old.file}', { at: 0 });\n`);
+  Object.assign(f.d.state, { stage: 'done', exported: true });
+  await f.d.redrawPicture('xiang-yu', 'a scar on his left cheek');
+  const again = f.calls.slice(6).map((c) => /Subject: ([^,.]*)/.exec(c.prompt)![1]).sort();
+  assert.deepEqual(again, ['Liu Bang bows before Xiang Yu in the tent', 'Xiang Yu alone', 'Xiang Yu'].sort());
+  const now = readPictures(f.dir).items;
+  assert.equal(now.find((p) => p.id === 'p03-a')!.file, before.find((p) => p.id === 'p03-a')!.file);
+  assert.equal(fs.readFileSync(path.join(f.dir, 'pages/p01.js'), 'utf8'), `P.scene('assets/gen/${now.find((p) => p.id === 'p01-a')!.file}', { at: 0 });\n`);
+  assert.equal(f.d.state.exported, false);
 });

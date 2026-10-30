@@ -15,7 +15,7 @@ import { BRAND_DIR, SIGN_OFF_HOLD, cornerMark, signsOff } from './brand.js';
 import { assetPath, assetsOn, userAssets } from './assets.js';
 import { inkScript } from './ink.js';
 import { choose, type Decider } from './decide.js';
-import { PICTURES_DIR, PICTURES_MANIFEST, cutOut, inkPath, cutOutTrouble, lookPrefix, pictureFile, pictureIssues, pictureKey, ledPage, picturePageNote, picturePath, picturePlan, picturePlanNote, picturePrompt, pictureReviewNote, pictureSize, pictureStyle, picturesOn, readPictures, sniffPicture, type ImageProvider, type Picture, type PicturePlan, type Pictures } from './pictures.js';
+import { CAST, PICTURES_DIR, PICTURES_MANIFEST, cutOut, inkPath, cutOutTrouble, lookPrefix, pictureFile, pictureIssues, pictureKey, ledPage, picturePageNote, picturePath, picturePlan, picturePlanNote, picturePrompt, pictureReviewNote, pictureSize, pictureStyle, picturesOn, readPictures, sniffPicture, type ImageProvider, type Picture, type PicturePlan, type Pictures, type RefMode } from './pictures.js';
 import { ENGINE_DIR } from '@frametell/engine/tools/project.mjs';
 import { freeze, openIn, readIn, writeIn } from './projectfs.js';
 import { briefFile, runResearch, type ResearchLimits } from './research/research.js';
@@ -975,22 +975,27 @@ export class Director {
    * picture `like` another drawn from that one. A picture drawn already from the same prompt is kept (a resumed run, a
    * revision pays nothing again). One that can't be had is left out: its pages draw that part in code.
    */
-  async pictures() {
+  async pictures(): Promise<number> {
     const style = this.pictureStyle(), plan = this.planned();
-    if (!style || !plan.length) { this.state.pictures = 'none'; this.save(); return; }
+    if (!style || !plan.length) { this.state.pictures = 'none'; this.save(); return 0; }
     const pics = readPictures(this.o.dir);
     const drawn = new Map<string, Picture>();
-    const one = async (p: PicturePlan, refs: (Picture | string)[], mode: 'none' | 'look' | 'same' | 'own' | 'cast') => {
+    let moved = 0;
+    const one = async (p: PicturePlan, refs: (Picture | string)[], mode: RefMode, uses: PicturePlan[] = []) => {
       // a picture of the person's own subject is drawn from their file, whatever else it would be drawn from
       if (p.from) { refs = [p.from]; mode = 'own'; }
-      const prompt = picturePrompt(style, p, pics.notes, mode), key = pictureKey(p, pics.notes);
+      // a scene drawn from designs is drawn again when one of them is
+      const deps = mode === 'uses' ? refs.map((r) => (typeof r === 'string' ? r : r.file)) : [];
+      const prompt = picturePrompt(style, p, pics.notes, mode, undefined, uses), key = pictureKey(p, pics.notes, deps);
       // drawn already for the same ask (a resumed run, a revision), or drawn again by the user's own word: kept
       const had = pics.items.find((x) => x.id === p.id);
-      if (had && (had.key === key || had.note) && this.project.exists(picturePath(had))) { drawn.set(p.id, had); return; }
+      if (had && (had.key === key || (had.note && !deps.length)) && this.project.exists(picturePath(had))) { drawn.set(p.id, had); return; }
       this.pictureEvent(p, 'drawing', { sample: p === plan[0] });
       try {
         const pic = await this.drawPicture(p, prompt, refs, key);
-        this.keepPicture(pic);
+        const old = this.keepPicture(pic);
+        // pages written already (a design drawn again once they were) are pointed at the new file
+        if (old && old.file !== pic.file) moved += this.repoint(old, pic);
         drawn.set(p.id, pic);
         this.pictureEvent(p, 'done', { sample: p === plan[0], pic });
       } catch (e) {
@@ -1001,11 +1006,18 @@ export class Director {
     const [first, ...rest] = plan;
     await one(first, [], 'none');
     const sample = drawn.get(first.id);
-    // in a style with a cast sheet the sample is the sheet: every picture is drawn from it, its people as they are there
-    const look = (): [Picture[], 'none' | 'look' | 'cast'] => (sample ? [[sample], style.cast ? 'cast' : 'look'] : [[], 'none']);
+    // a film from before designs has one cast sheet, the sample: every scene is drawn from it, its people as they are
+    // there. A film with designs draws them from the first one's look, then each scene from the designs it shows
+    const sheet = style.cast && first.id === CAST && !first.base;
+    const look = (): [Picture[], RefMode] => (sample ? [[sample], sheet ? 'cast' : 'look'] : [[], 'none']);
+    const from = (p: PicturePlan): [Picture[], RefMode, PicturePlan[]] => {
+      const uses = (p.uses ?? []).flatMap((id) => { const b = plan.find((q) => q.id === id), d = drawn.get(id); return b && d ? [[b, d] as const] : []; });
+      return uses.length ? [uses.map(([, d]) => d), 'uses', uses.map(([b]) => b)] : [...look(), []];
+    };
     const many = PICTURES_AT_ONCE;
-    await pool(rest.filter((p) => !p.like), many, (p) => one(p, ...look()));
-    await pool(rest.filter((p) => p.like), many, (p) => { const base = drawn.get(p.like!); return base ? one(p, [base], 'same') : one(p, ...look()); });
+    await pool(rest.filter((p) => p.base && !p.like), many, (p) => one(p, ...look()));
+    await pool(rest.filter((p) => !p.base && !p.like), many, (p) => one(p, ...from(p)));
+    await pool(rest.filter((p) => p.like), many, (p) => { const base = drawn.get(p.like!); return base ? one(p, [base], 'same') : one(p, ...from(p)); });
     // pictures the storyboard no longer asks for are let go
     const now = readPictures(this.o.dir);
     const gone = now.items.filter((x) => !plan.some((p) => p.id === x.id));
@@ -1017,6 +1029,18 @@ export class Director {
     this.state.pictures = 'done'; this.save();
     this.freezePictures();
     await this.commit(this.say('本片配图', "This film's pictures"));
+    return moved;
+  }
+
+  /** the pages that place `old` pointed at `pic`, its new file (a file's name carries its content's hash). → how many */
+  private repoint(old: Picture, pic: Picture): number {
+    if (!fs.existsSync(this.project.file('pages'))) return 0;
+    let moved = 0;
+    for (const f of fs.readdirSync(this.project.file('pages')).filter((n) => n.endsWith('.js'))) {
+      const src = this.project.read(`pages/${f}`);
+      if (src.includes(picturePath(old))) { this.project.write(`pages/${f}`, src.split(picturePath(old)).join(picturePath(pic))); moved++; }
+    }
+    return moved;
   }
 
   /**
@@ -1029,8 +1053,10 @@ export class Director {
     const style = this.pictureStyle(), plan = this.planned();
     const p = plan.find((x) => x.id === id);
     if (!style || !p) { this.emit({ type: 'note', text: this.say('这张配图已经不在分镜里了', 'That picture is no longer in the storyboard') }); return; }
-    const moved = await this.drawAgain(p, plan, note);
+    let moved = await this.drawAgain(p, plan, note);
     if (moved === undefined) return;
+    // a design drawn again: the scenes drawn from it are drawn again too
+    if (p.base) moved += await this.pictures();
     await this.commit(this.say(`重画配图 ${id}`, `Picture ${id} drawn again`));
     if (this.state.stage === 'done') {
       if (moved) { this.state.exported = false; this.save(); }
@@ -1056,14 +1082,16 @@ export class Director {
     const kin = itself ? undefined : clean(p.like ? pics.items.find((x) => x.id === p.like) : undefined)
       ?? pics.items.map((x) => (plan.find((q) => q.id === x.id)?.like === id ? clean(x) : undefined)).find(Boolean);
     const look = [plan[0].id, ...plan.map((q) => q.id)].map((pid) => (pid === id ? undefined : clean(pics.items.find((x) => x.id === pid)))).find(Boolean);
+    // a scene of a film with designs: drawn from the designs it shows, as it was the first time
+    const uses = itself || kin || p.from ? [] : (p.uses ?? []).flatMap((u) => { const b = plan.find((q) => q.id === u), d = pics.items.find((x) => x.id === u); return b && d ? [[b, d] as const] : []; });
     // another pose of it is drawn from as the same one, not copied: its hat and props stay with it ('kin')
-    const [refs, mode]: [(Picture | string)[], 'none' | 'look' | 'same' | 'own' | 'kin' | 'cast'] = itself ? [[itself], 'same'] : kin ? [[kin], p.like ? 'same' : 'kin'] : p.from ? [[p.from], 'own'] : look ? [[look], style.cast && look.id === plan[0].id ? 'cast' : 'look'] : [[], 'none'];
+    const [refs, mode]: [(Picture | string)[], RefMode] = itself ? [[itself], 'same'] : kin ? [[kin], p.like ? 'same' : 'kin'] : p.from ? [[p.from], 'own'] : uses.length ? [uses.map(([, d]) => d), 'uses'] : look ? [[look], style.cast && look.id === plan[0].id && plan[0].id === CAST && !plan[0].base ? 'cast' : 'look'] : [[], 'none'];
     this.pictureEvent(p, 'drawing', { note: change });
     let pic: Picture;
     // drawn from another pose of it: what that one adds (a hat, a prop) is named, or the image model copies it
     const other = mode === 'kin' && kin ? plan.find((q) => q.id === kin.id)?.what : undefined;
     const ask = other ? [change, `the reference picture shows "${other}": draw none of what that adds to the subject above (its hat, props, pose)`].filter(Boolean).join('; ') : change;
-    try { pic = await this.drawPicture(p, picturePrompt(style, p, pics.notes, mode, ask), refs, pictureKey(p, pics.notes), change); }
+    try { pic = await this.drawPicture(p, picturePrompt(style, p, pics.notes, mode, ask, uses.map(([b]) => b)), refs, pictureKey(p, pics.notes, mode === 'uses' ? uses.map(([, d]) => d.file) : []), change); }
     catch (e) {
       if (stopped(e) || this.o.signal?.aborted) throw e;
       this.pictureEvent(p, 'failed', { detail: (e as Error).message });
@@ -1071,13 +1099,7 @@ export class Director {
     }
     this.keepPicture(pic);
     // the pages that place it, pointed at the new file (its name carries its content's hash)
-    let moved = 0;
-    if (old && fs.existsSync(this.project.file('pages'))) {
-      for (const f of fs.readdirSync(this.project.file('pages')).filter((n) => n.endsWith('.js'))) {
-        const src = this.project.read(`pages/${f}`);
-        if (src.includes(picturePath(old))) { this.project.write(`pages/${f}`, src.split(picturePath(old)).join(picturePath(pic))); moved++; }
-      }
-    }
+    const moved = old ? this.repoint(old, pic) : 0;
     this.pictureEvent(p, 'done', { pic });
     return moved;
   }
@@ -1101,7 +1123,10 @@ export class Director {
     if (added) await this.pictures();
     const plan = this.planned();
     let redrawn = 0;
-    for (const n of named) { const p = plan.find((x) => x.id === n.id); if (p && await this.drawAgain(p, plan, n.note) !== undefined) redrawn++; }
+    let design = false;
+    for (const n of named) { const p = plan.find((x) => x.id === n.id); if (p && await this.drawAgain(p, plan, n.note) !== undefined) { redrawn++; design ||= !!p.base; } }
+    // a design drawn again: the scenes drawn from it are drawn again too
+    if (design) await this.pictures();
     this.freezePictures();
     await this.commit(this.say('照用户的意见重画配图', 'Pictures drawn again as the user asked'));
     return redrawn;

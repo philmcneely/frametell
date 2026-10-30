@@ -29,7 +29,16 @@ export const cutOut = (k: PictureKind) => k === 'object' || k === 'character';
  *  that, so it stays theirs, in the film's look */
 export interface PicturePlan { id: string; kind: PictureKind; what: string; shape: PictureShape; pages: string[]; like?: string; from?: string;
   /** a style drawn in pictures: the cue of its page the scene starts on, and where its ink starts (shares of the frame) */
-  cue?: number; focus?: [number, number] }
+  cue?: number; focus?: [number, number];
+  /** a style with a cast: one of the film's designs (a person in one look, a place, a prop), on no page, drawn before
+   *  any scene; `uses`: the designs a scene shows, which it is drawn from (BASE_USES at most, the most important first) */
+  base?: BaseKind; uses?: string[] }
+
+/** what a design of a film drawn in pictures is: a person or creature in one look, a place, an object */
+export type BaseKind = 'character' | 'place' | 'prop';
+const BASE_KINDS: BaseKind[] = ['character', 'place', 'prop'];
+/** a film's designs at most, and the most a scene is drawn from: the more references, the less of each is kept */
+export const BASES_MAX = 8, BASE_USES = 4;
 
 /** a file of the person's that a picture may be drawn from: a raster in the brand's or the uploads' folder */
 const OWN = /^assets\/(brand|user)\/[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.(png|jpe?g|webp)$/i;
@@ -38,8 +47,9 @@ const OWN_SVG = /^assets\/(brand|user)\/[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.svg$/i
 /** what a style tells the image model, from its folder's pictures.json; no file: the style draws everything in code.
  *  `fromLook`: a style with no look of its own (free) has no words of its own either: each film's are its designed
  *  look's (lookPrefix). `led`: a style drawn in pictures: every beat the narration shows is a scene an image model
- *  draws, and the pages draw it in and write the words on top. `cast`: the first picture is the film's cast sheet
- *  (CAST), on no page, and every other picture is drawn from it, so its people look the same in every scene. `words`: a
+ *  draws, and the pages draw it in and write the words on top. `cast`: the film's designs come first (`base`: each
+ *  person in each look, a place, a prop), on no page, and every scene is drawn from the ones it shows (`uses`), so they
+ *  look the same in every scene (a film from before designs has one cast sheet, CAST, every scene drawn from it). `words`: a
  *  style drawn in pictures whose words are drawn in them too (titles, labels, a short list): the pages write nothing */
 export interface PictureStyle { kinds: PictureKind[]; max: number; quality: 'low' | 'medium'; prefix: string; avoid: string; fromLook?: boolean; led?: boolean; cast?: boolean; words?: boolean }
 
@@ -64,8 +74,10 @@ export interface ImageProvider {
 
 const ID = /^[a-z][a-z0-9-]{1,30}$/;
 export const PICTURES_MAX = 40;
-/** the cast sheet's id, in a style with one */
+/** the cast sheet's id: a film of a style with a cast from before designs had this one, every scene drawn from it */
 export const CAST = 'cast';
+/** a design of the film, or the cast sheet of a film from before designs */
+const isBase = (style: PictureStyle, o: { id?: unknown; base?: unknown }, i: number) => !!style.cast && (BASE_KINDS.includes(o.base as BaseKind) || (i === 0 && o.id === CAST));
 
 export function pictureStyle(style: string): PictureStyle | undefined {
   let raw: Record<string, unknown>;
@@ -107,7 +119,10 @@ export function picturePlan(look: unknown, style?: PictureStyle, own: string[] =
     const from = !like && typeof o.from === 'string' && OWN.test(o.from) && own.includes(o.from) ? o.from : undefined;
     const cue = style.led && Number.isInteger(o.cue) && (o.cue as number) >= 0 ? o.cue as number : undefined;
     const focus = style.led && isFocus(o.focus) ? [o.focus[0], o.focus[1]] as [number, number] : undefined;
-    out.push({ id, kind, what, shape, pages, ...(like && out.length ? { like } : {}), ...(from ? { from } : {}), ...(cue !== undefined ? { cue } : {}), ...(focus ? { focus } : {}) });
+    const base = style.cast && kind === 'scene' && BASE_KINDS.includes(o.base as BaseKind) ? o.base as BaseKind : undefined;
+    // a scene is drawn from designs listed before it
+    const uses = style.cast && !base && Array.isArray(o.uses) ? [...new Set(o.uses.filter((u): u is string => typeof u === 'string' && out.some((p) => p.id === u && p.base)))].slice(0, BASE_USES) : [];
+    out.push({ id, kind, what, shape, pages: base ? [] : pages, ...(like && out.length ? { like } : {}), ...(from ? { from } : {}), ...(cue !== undefined ? { cue } : {}), ...(focus ? { focus } : {}), ...(base ? { base } : {}), ...(uses.length ? { uses } : {}) });
     if (out.length === style.max) break;
   }
   return out;
@@ -116,13 +131,14 @@ export function picturePlan(look: unknown, style?: PictureStyle, own: string[] =
 /** what is wrong with `look.pictures`, for the storyboard check (nothing when there are none: pictures are optional).
  *  `own`: the person's files in the film (assets/brand/…, assets/user/…), which `from` may name */
 /** `cues`: a style drawn in pictures, once its narration is written: how many lines each page has, and its scenes are
- *  checked against them (before, at the storyboard, only its cast sheet counts) */
+ *  checked against them (before, at the storyboard, only its designs count) */
 export function pictureIssues(look: unknown, pageIds: string[], style: PictureStyle, own: string[] = [], cues?: Record<string, number>): string[] {
   const list = listOf(look);
   if (list === undefined) return [];
   if (!Array.isArray(list)) return ['`look.pictures` must be a list of { id, kind, what, shape, pages }'];
   const out: string[] = [];
-  const ids = new Set(pageIds), seen = new Map<string, Record<string, unknown>>();
+  const ids = new Set(pageIds), seen = new Map<string, Record<string, unknown>>(), bases = new Set<string>();
+  let scenes = 0;
   if (list.length > style.max) out.push(`\`look.pictures\` lists ${list.length} pictures: this style allows ${style.max}; keep the ones code would draw worst`);
   list.forEach((x, i) => {
     const o = (x && typeof x === 'object' ? x : {}) as Record<string, unknown>;
@@ -137,12 +153,29 @@ export function pictureIssues(look: unknown, pageIds: string[], style: PictureSt
     else if (what.length > 400) out.push(`\`look.pictures\`: ${id}'s \`what\` is ${what.length} characters: say it in at most 400`);
     const pages = Array.isArray(o.pages) ? o.pages : [];
     const unknown = pages.filter((p) => typeof p !== 'string' || !ids.has(p));
-    const sheet = style.cast && i === 0;
-    if (style.cast && (i === 0) !== (id === CAST)) out.push(i === 0 ? `\`look.pictures\`: the first picture is the film's cast sheet, id "${CAST}": every person or creature who appears in more than one scene, side by side` : `\`look.pictures\`: ${id} is not first: only the first picture is the cast sheet "${CAST}"`);
-    if (sheet && o.kind !== 'scene') out.push(`\`look.pictures\`: the cast sheet is a \`scene\``);
+    const sheet = isBase(style, o, i);
+    if (style.cast) {
+      if (o.base !== undefined && !BASE_KINDS.includes(o.base as BaseKind)) out.push(`\`look.pictures\`: ${id} has base "${String(o.base)}": a design is a "character", a "place" or a "prop"`);
+      else if (i === 0 && !sheet) out.push(`\`look.pictures\`: the first pictures are the film's designs (\`base\`): every person or creature who appears in more than one scene, one design for each look, then the places and props that recur`);
+      else if (sheet && scenes) out.push(`\`look.pictures\`: ${id} is a design listed after a scene: the designs come first, before every scene`);
+      else if (!sheet && o.id === CAST) out.push(`\`look.pictures\`: "${CAST}" is not a design: give each person a design of their own (\`base\`)`);
+      if (sheet && o.kind !== 'scene') out.push(`\`look.pictures\`: ${id} is a design: its kind is \`scene\``);
+      if (sheet) bases.add(id); else scenes++;
+      if (bases.size === BASES_MAX + 1 && sheet) out.push(`\`look.pictures\`: more than ${BASES_MAX} designs: keep the people, places and props that recur most; one that is in a single scene is described in that scene`);
+      if (o.uses !== undefined) {
+        const uses = Array.isArray(o.uses) ? o.uses : [];
+        if (sheet) out.push(`\`look.pictures\`: ${id} is a design: it uses nothing, the scenes use it`);
+        else if (!Array.isArray(o.uses) || !uses.length) out.push(`\`look.pictures\`: ${id}'s \`uses\` is a list of the designs it shows: leave it out when it shows none`);
+        else {
+          const wrong = uses.filter((u) => typeof u !== 'string' || !bases.has(u));
+          if (wrong.length) out.push(`\`look.pictures\`: ${id} uses ${wrong.map(String).join(', ')}, which ${wrong.length > 1 ? 'are not designs' : 'is not a design'} listed before it${bases.size ? ` (${[...bases].join(', ')})` : ''}`);
+          if (uses.length > BASE_USES) out.push(`\`look.pictures\`: ${id} uses ${uses.length} designs: at most ${BASE_USES}, the most important first (the more a scene is drawn from, the less of each it keeps)`);
+        }
+      }
+    }
     if (unknown.length) out.push(`\`look.pictures\`: ${id} names pages the storyboard does not have: ${unknown.join(', ')}`);
     else if (!pages.length && !sheet) out.push(`\`look.pictures\`: ${id} is on no page: list the pages that show it, or leave it out`);
-    else if (pages.length && sheet) out.push(`\`look.pictures\`: the cast sheet is on no page: it is what the scenes are drawn from`);
+    else if (pages.length && sheet) out.push(`\`look.pictures\`: ${id} is a design, on no page: it is what the scenes are drawn from`);
     if (style.led && cues && !sheet && o.kind === 'scene') {
       if (pages.length > 1) out.push(`\`look.pictures\`: ${id} is on ${pages.length} pages: a scene of this style is on one page (draw another scene for another page)`);
       if (!Number.isInteger(o.cue) || (o.cue as number) < 0) out.push(`\`look.pictures\`: ${id} needs \`cue\`: the number of its page's line it starts on (0 for the first)`);
@@ -182,29 +215,43 @@ const KIND_LINE: Record<PictureKind, string> = {
 };
 
 const CAST_LINE = 'A character model sheet: every character the subject names standing side by side in a row, full body, front three-quarter view, evenly spaced with a clear margin, on a plain light ground, nothing else in the picture, no names, labels or lettering of any kind (a prop with words on it is drawn blank).';
+/** a design: large and plain, so a scene drawn from it can keep every detail */
+const DESIGN_ONLY = ' It is a design to draw scenes from, not a scene: nothing in it is lettered, whatever the subject says (no title, name, caption, sign or letters of any script).';
+const BASE_LINE: Record<BaseKind, string> = {
+  character: 'A character design sheet of this one character alone: on the left, the whole figure standing, front three-quarter view; on the right, a large head-and-shoulders close-up of the same face, filling the height; neutral expression, even light, on a plain light ground, nothing else in the picture, no names, labels or lettering of any kind.',
+  place: 'An establishing view of this place alone, empty of people, all of it in clear even light, as it looks whenever the story is there; no lettering of any kind.',
+  prop: 'This one object alone, large and centred with a clear margin, three-quarter view, on a plain light ground, nothing else in the picture; any writing on it drawn blank.',
+};
+const designOf = (b: PicturePlan) => `${b.base === 'character' ? 'the design of' : b.base === 'place' ? 'the place' : 'the object'} ${b.what.replace(/[.\s]+$/, '').slice(0, 160)}`;
 
 /** the prompt a picture is drawn from: the style's words, what the picture is, the person's adjustments, and what the
  *  pictures it is drawn from are for */
-export function picturePrompt(style: PictureStyle, p: PicturePlan, notes: string[], refs: 'none' | 'look' | 'same' | 'adjust' | 'own' | 'kin' | 'cast', note?: string): string {
+export type RefMode = 'none' | 'look' | 'same' | 'adjust' | 'own' | 'kin' | 'cast' | 'uses';
+/** `uses`: the designs a scene is drawn from (refs 'uses'), in the order of its reference images */
+export function picturePrompt(style: PictureStyle, p: PicturePlan, notes: string[], refs: RefMode, note?: string, uses: PicturePlan[] = []): string {
   return [
     `${style.prefix.replace(/[.\s]+$/, '')}.`,
-    style.cast && p.id === CAST ? CAST_LINE : KIND_LINE[p.kind],
+    p.base ? BASE_LINE[p.base] + DESIGN_ONLY : style.cast && p.id === CAST ? CAST_LINE : KIND_LINE[p.kind],
     `Subject: ${p.what.replace(/[.\s]+$/, '')}.`,
     refs === 'look' ? 'The reference image shows the look of this film: match its style, palette, shading and level of detail exactly, but draw the subject above, not what the reference shows.' : '',
     refs === 'cast' ? "The reference image is this film's cast sheet: everyone in it whom the subject above names is drawn exactly as there (face, hair, glasses, build, clothes and their colours; a creature's shape and markings), in the pose and expression the subject says; match its look, line and palette. Draw the scene the subject describes, not the sheet's line-up or its plain ground, and copy no lettering from the sheet: the only words in this picture are the ones the subject quotes." : '',
+    refs === 'uses' && uses.length ? `The reference images are this film's own designs, in this order: ${uses.map((b, i) => `${i + 1}. ${designOf(b)}`).join('; ')}. Everyone and everything of them that the subject above shows is drawn exactly as designed there (a person's face, hair, beard, build, clothes and their colours; a place's buildings, layout and colours; an object's shape and markings), in the pose, expression and light the subject says; match their look, line and palette. Draw the scene the subject describes, not the references' layout or plain grounds, and copy no lettering from them: the only words in this picture are the ones the subject quotes.` : '',
     refs === 'same' ? 'The reference image shows this very subject: keep it exactly the same (shape, proportions, colours, details); change only what the subject above says.' : '',
     refs === 'kin' ? 'The reference image shows this same character or thing in another picture of the film: keep who it is exactly (face, hair, build, colours, clothes), but draw the pose and expression the subject above says, and only the hats, props and things in hand that it names; leave out any the reference has that the subject does not mention.' : '',
     refs === 'adjust' ? 'The reference image is this picture as it is now: keep its subject, pose, composition and look, and change only what the latest adjustment below asks.' : '',
     refs === 'own' ? "The reference image is the person's own picture of this subject (their character, mascot, product or person): keep it recognisably the same one (its shape, proportions, colours, markings and character), but draw it in the look described above, in the pose the subject says. Leave out any words, letters or logo text in the reference." : '',
     notes.length ? `Adjustments to the look: ${notes.join('; ')}.` : '',
     note ? `For this picture: ${note}.` : '',
+    // the style's words tell where lettering goes; without this the model letters a title on a picture that asks none
+    style.words && !p.base ? 'The only words in this picture are the ones the subject quotes; a subject that quotes none is a picture with no words at all: no title, caption, label, sign or letters anywhere, not even ones the story suggests.' : '',
     style.avoid || 'No text, no letters, no numbers, no signature, no watermark.',
   ].filter(Boolean).join('\n');
 }
 
 export const pictureSize = (p: PicturePlan) => SHAPES[p.shape];
-/** what a picture is drawn for: what the storyboard asks, and the look's adjustments it follows */
-export const pictureKey = (p: PicturePlan, notes: string[]) => createHash('sha256').update(JSON.stringify([p.kind, p.shape, p.what, p.like ?? '', notes, ...(p.from ? [p.from] : [])])).digest('hex').slice(0, 16);
+/** what a picture is drawn for: what the storyboard asks, the look's adjustments it follows, and the files of the
+ *  designs it is drawn from (`deps`: a design drawn again draws again the scenes that use it) */
+export const pictureKey = (p: PicturePlan, notes: string[], deps: string[] = []) => createHash('sha256').update(JSON.stringify([p.kind, p.shape, p.what, p.like ?? '', notes, ...(p.from ? [p.from] : []), ...(p.base ? [p.base] : []), ...(deps.length ? [deps] : [])])).digest('hex').slice(0, 16);
 export const picturePath = (p: Pick<Picture, 'file'>) => `${PICTURES_DIR}/${p.file}`;
 /** where a picture's ink map is, in a style that draws its pictures in (ink.ts) */
 export const inkPath = (p: Pick<Picture, 'file'>) => `${PICTURES_DIR}/${p.file}.ink.js`;
@@ -285,21 +332,26 @@ export function picturePlanNote(style: PictureStyle | undefined, own: string[] =
 - When the person has their own character, mascot, product or person in mind (the brief or the brand names one), it is theirs on screen, never a stand-in: ${raster.length ? `when one of their pictures shows it (${raster.join(', ')}), the picture of it gets \`"from": "<that file>"\`, so it is drawn from theirs and stays recognisably theirs in the film's look (its other poses are \`like\` it)` : 'describe it in `what` as they describe it'}.${svg.length ? ` Their SVGs (${svg.join(', ')}) are placed as they are with P.img and need no picture.` : ''}`;
 }
 
-/** a style drawn in pictures. At the storyboard (`lines` none): only the cast sheet; its scenes are planned once the
+/** a style drawn in pictures. At the storyboard (`lines` none): only its designs; its scenes are planned once the
  *  narration is written, against its real lines (`lines`: each page's lines, numbered; 'script': a change, whose
  *  planner reads them in script.js), one for every line or two */
 function ledPlanNote(style: PictureStyle, raster: string[], lines?: { page: string; lines: string[] }[] | 'script'): string {
-  const sheet = style.cast ? `- The first picture is the film's cast sheet, id \`${CAST}\`, on no page (\`"pages": []\`): every person or creature who appears in more than one scene, each described as they always look (age, hair, face, glasses, clothes and their colours, build; a creature's shape, colours and markings). The user confirms it before the go-ahead, and every scene is drawn from it, so each of them looks the same in every scene. A film with no recurring people still has one: its host, or the one person it follows.` : '';
+  const sheet = style.cast ? `- First come the film's designs (\`base\`), on no page (\`"pages": []\`): each is drawn as a picture of its own before any scene, and every scene is drawn from the designs it shows, so they look the same in every scene. Up to ${BASES_MAX}:
+  - \`"base": "character"\`: one for each person or creature who appears in more than one scene, described as they always look (age, build, face, hair, beard, glasses, clothes and their colours, one mark that can't be mistaken; a creature's shape, colours and markings), and no two alike. A person who changes in a way the story needs (young and old, in armour and in rags) has one design for each look, its id saying which (\`dantes-young\`, \`dantes-prisoner\`).
+  - \`"base": "place"\`: a place two or more scenes happen in (a hall, a tent, a ship's deck), as it always looks. \`"base": "prop"\`: an object that matters in two or more scenes (a jade cup, a letter, the product).
+  - Each design's \`what\` is written in English whatever the film's language (the image model reads English best, and writes what it can't read into the picture), with no quoted words: a design carries no lettering.
+  - The first design is drawn first and sets the film's look: put the main character first. A film with no recurring people still has one: its host, or the one person it follows. Someone in one scene only has no design: that scene describes them.` : '';
   const own = raster.length ? `\n- The person's own character, mascot or product is theirs on screen: the picture of it gets \`"from": "<that file>"\` (one of ${raster.join(', ')}), so it stays recognisably theirs.` : '';
-  if (!lines) return `This style is drawn in pictures: an image model draws the film's scenes, and each page draws them in as they are spoken${style.words ? ', words and all' : ''}. Its scenes are planned after the narration is written, line by line, so \`look.pictures\` lists only ${style.cast ? 'the cast sheet now' : 'nothing yet'}.
-${style.cast ? `\`"pictures": [{ "id": "${CAST}", "kind": "scene", "what": "Sam, a salesman in his early 30s with short curly dark hair, round glasses and a mustard jumper; Priya, a CHRO in her 50s with a silver bob and a navy blazer", "pages": [] }]\`\n${sheet}` : ''}${own}
+  if (!lines) return `This style is drawn in pictures: an image model draws the film's scenes, and each page draws them in as they are spoken${style.words ? ', words and all' : ''}. Its scenes are planned after the narration is written, line by line, so \`look.pictures\` lists only ${style.cast ? 'its designs now' : 'nothing yet'}.
+${style.cast ? `\`"pictures": [{ "id": "sam", "kind": "scene", "base": "character", "what": "Sam, a salesman in his early 30s, slim, short curly dark hair, round glasses, a mustard jumper over a white shirt", "pages": [] }, { "id": "priya", "kind": "scene", "base": "character", "what": "Priya, a CHRO in her 50s, a silver bob, a navy blazer, a red pen always in hand", "pages": [] }, { "id": "office", "kind": "scene", "base": "place", "what": "Priya's glass-walled office: a white desk, a tall plant, a city window behind", "pages": [] }]\`\n${sheet}` : ''}${own}
 - A film drawn in pictures has no \`kit\`: leave \`look.kit\` out.`;
-  return `${lines === 'script' ? `This film is drawn in pictures: its scenes are in \`look.pictures\` in storyboard.json, after ${style.cast ? `the cast sheet \`${CAST}\`` : 'the first'}, each on the line of its page it starts on (\`cue\`: a page's lines are its cues in script.js, 0 for the first). A change that changes a page's lines plans its scenes again to fit them; a change to what a scene shows changes its \`what\`.` : `Now plan this film's scenes from its narration: add them to \`look.pictures\` in storyboard.json, after ${style.cast ? `the cast sheet \`${CAST}\` (keep it first and as it is)` : 'what is there'}, and stop.
+  return `${lines === 'script' ? `This film is drawn in pictures: its scenes are in \`look.pictures\` in storyboard.json, after ${style.cast ? 'its designs' : 'the first'}, each on the line of its page it starts on (\`cue\`: a page's lines are its cues in script.js, 0 for the first). A change that changes a page's lines plans its scenes again to fit them; a change to what a scene shows changes its \`what\`${style.cast ? ' (and its `uses`); a change to how a person, place or prop looks changes its design, and every scene that uses it is drawn again' : ''}.` : `Now plan this film's scenes from its narration: add them to \`look.pictures\` in storyboard.json, after ${style.cast ? 'its designs (keep them first and as they are; a scene that needs one more, a person in a new look or a place that recurs, adds it at the end of the designs)' : 'what is there'}, and stop.
 ${lines.map((p) => `${p.page}:\n${p.lines.map((l, i) => `  ${i}. ${l}`).join('\n')}`).join('\n')}`}
-\`{ "id": "p01-a", "kind": "scene", "what": "Sam at his desk cracking his knuckles, a wall clock reading 9:50 behind him, wide shot", "pages": ["p01"], "cue": 0, "focus": [0.45, 0.4] }\`
+\`{ "id": "p01-a", "kind": "scene", "what": "Sam at his desk cracking his knuckles, a wall clock reading 9:50 behind him, wide shot", "pages": ["p01"], "cue": 0, "focus": [0.45, 0.4]${style.cast ? ', "uses": ["sam"]' : ''} }\`
 - One scene for every two or three lines above, about every 6–8 seconds of narration (a 60-second film has 8–10): a viewer needs a moment to take each picture in, its words included, so a scene holds while the narration explains it, and the next comes when the story moves on. A long line can have one of its own. A page's first scene is on its line 0. At most ${style.max} in all. Name each by its page and order (\`p02-a\`, \`p02-b\`), each on its page alone, each a moment of its own (a new action, a close-up, a reaction, the next point lettered in), never the same picture again.
 - \`cue\`: the number of the line above where it starts; it is drawn in over its first moments and then held, whole, for the lines it covers. \`focus\`: [x, y] as shares of the frame, where its drawing starts: on what the line names first, the heading when the scene opens on its words (\`[0.3, 0.1]\` for a heading at the top left), else the face of the person it is about. Nobody writes the pages: each is drawn from these fields alone.
-- \`what\` is one illustrated moment, written in English whatever the film's language (the image model reads English best): who is in it (by the names on the cast sheet), where, what they do and their expression, the props, and one clear focal subject; a wide, a medium or a close shot, varied from scene to scene. Never the style, colours or a camera move: those are added for you.
+${style.cast ? `- \`uses\`: the ids of the designs the scene shows (each person in the look they have at that moment, its place, its prop), at most ${BASE_USES}, the most important first: it is drawn from them. A scene that shows none has no \`uses\`.
+` : ''}- \`what\` is one illustrated moment, written in English whatever the film's language (the image model reads English best): who is in it (by their designs' names${style.cast ? '; someone with no design described in full' : ''}), where, what they do and their expression, the props, and one clear focal subject; a wide, a medium or a close shot, varied from scene to scene. Never the style, colours or a camera move: those are added for you.
 ${style.words ? `- Words in a picture are keywords, a heading, a label or a slogan: quote them in \`what\` in double quotes, in the film's language (the only non-English words in \`what\`), and say where they sit and how they look (a heading lettered across the top, a sticky note reading "One problem", a stamp "NOT YET" on the binder). Never the narration's sentences and never the scene's description: the narration is heard, a picture that spells it out looks cheap.` : '- Lettering inside a scene only for a short sign the moment needs, three words at most, quoted exactly in `what`.'}${own}`;
 }
 
