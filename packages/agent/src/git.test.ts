@@ -134,3 +134,41 @@ test('a project whose .gitignore is gone still keeps the engine links, the studi
     assert.deepEqual(tracked, ['pages/p01.js']);
   } finally { for (const d of [dir, engine]) fs.rmSync(d, { recursive: true, force: true }); }
 });
+
+test('a project\'s history keeps its text and never its media: pictures, voice, video and documents, in any case', async () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ft-media-')));
+  try {
+    for (const d of ['pages', 'audio', 'assets/gen', 'materials']) fs.mkdirSync(path.join(dir, d), { recursive: true });
+    const files = {
+      'script.js': 'const SCRIPT = {};', 'pages/p01.js': 'page', 'audio/p01-abc.json': '{}', 'assets/gen/pictures.json': '{}',
+      'assets/gen/p01-a-1234.png.ink.js': 'ink', 'audio/p01-abc.wav': 'RIFF', 'audio/p01-abc.mp3': 'ID3',
+      'assets/gen/p01-a-1234.png': 'png', 'assets/gen/p02-b-5678.JPG': 'jpg', 'materials/brief.pdf': 'pdf', 'materials/clip.MoV': 'mov',
+    };
+    for (const [f, body] of Object.entries(files)) fs.writeFileSync(path.join(dir, f), body);
+    assert.ok(await new Project(dir).commit('first'));
+    const tracked = (gitSync(dir, ['ls-files']).stdout || '').trim().split('\n').sort();
+    assert.deepEqual(tracked, ['assets/gen/p01-a-1234.png.ink.js', 'assets/gen/pictures.json', 'audio/p01-abc.json', 'pages/p01.js', 'script.js']);
+    for (const f of Object.keys(files)) assert.ok(fs.existsSync(path.join(dir, f)), `${f} stays on disk`);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('media committed before they were kept out leave the index at the next commit, and stay on disk', async () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ft-media-old-')));
+  try {
+    fs.mkdirSync(path.join(dir, 'audio'));
+    fs.writeFileSync(path.join(dir, 'script.js'), 'v1');
+    fs.writeFileSync(path.join(dir, 'audio', 'p01.wav'), 'RIFF');
+    // an older studio's history: everything committed, its exclude file without the media
+    const base = ['-c', 'user.name=t', '-c', 'user.email=t@t'];
+    gitSync(dir, ['init', '-q', '-b', 'main']);
+    gitSync(dir, ['add', '-A']);
+    gitSync(dir, [...base, 'commit', '-q', '-m', 'old']);
+    assert.match(gitSync(dir, ['ls-files']).stdout, /audio\/p01\.wav/);
+    fs.writeFileSync(path.join(dir, 'script.js'), 'v2');
+    assert.ok(await new Project(dir).commit('next'));
+    assert.deepEqual((gitSync(dir, ['ls-files']).stdout || '').trim().split('\n'), ['script.js']);
+    assert.ok(fs.existsSync(path.join(dir, 'audio', 'p01.wav')));
+    // and a commit with nothing new to say makes none
+    assert.equal(await new Project(dir).commit('again'), null);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

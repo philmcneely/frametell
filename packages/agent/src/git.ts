@@ -68,6 +68,12 @@ export function removeNestedRepos(root: string, warn: (msg: string) => void = (m
 /** the index's gitlinks (mode 160000: an embedded repo or submodule), which commit and status look into */
 const gitlinks = async (dir: string, env?: Env) =>
   (await gitAsync(dir, ['ls-files', '-s', '-z'], env)).stdout.split('\0').filter((l) => l.startsWith('160000 ')).map((l) => l.slice(l.indexOf('\t') + 1));
+/** what the index still holds that the rules keep out: media committed before they were kept out of the history. Taken
+ *  out of the index (the files stay where they are), so the next commit no longer carries them */
+const keptOut = async (dir: string, env?: Env) =>
+  (await gitAsync(dir, ['ls-files', '-z', '--cached', '--ignored', '--exclude-standard'], env)).stdout.split('\0').filter(Boolean);
+const keptOutSync = (dir: string, env?: Env) =>
+  (gitSync(dir, ['ls-files', '-z', '--cached', '--ignored', '--exclude-standard'], env).stdout || '').split('\0').filter(Boolean);
 const dropGitlinks = async (dir: string, env?: Env) => {
   const links = await gitlinks(dir, env);
   if (links.length) await gitAsync(dir, ['update-index', '--force-remove', '--', ...links], env);
@@ -79,8 +85,17 @@ const gitlinksSync = (dir: string, env?: Env) =>
 /** what a project's history never holds, whatever its .gitignore says (the agent can edit or delete that file): the
  *  engine links, the studio's record and the exported films. On Windows the links are junctions, which git walks into:
  *  without this, staging a project with no .gitignore read the whole engine and its node_modules and ran into the
- *  two-minute timeout. Kept in .git/info/exclude, which the agent cannot write */
-const KEEP_OUT = '/engine\n/engine_modules\n/out/\n/.studio/\n';
+ *  two-minute timeout. Kept in .git/info/exclude, which the agent cannot write.
+ *  Nor any picture, sound, video, document or font: the history is the film's text (its pages, script, storyboard and
+ *  the records naming its media), a few hundred KB. Its media are named by their content (pictures.ts, the voice's
+ *  takes), so an old version's text still names files that are there; a film's voice once took 18 MB of its 21 MB
+ *  history, every take kept for good */
+export const MEDIA = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'avif', 'bmp', 'tif', 'tiff', 'heic', 'heif', 'ico', 'psd',
+  'wav', 'mp3', 'm4a', 'aac', 'ogg', 'oga', 'opus', 'flac', 'mp4', 'm4v', 'mov', 'webm', 'mkv', 'avi',
+  'pdf', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'key', 'pages', 'numbers', 'epub', 'zip', 'ttf', 'otf', 'woff', 'woff2'];
+/** `*.png` in any case (`*.[pP][nN][gG]`): a pattern of info/exclude matches by case unless the repo ignores it */
+const anyCase = (ext: string) => `*.${[...ext].map((c) => (c.toUpperCase() !== c ? `[${c}${c.toUpperCase()}]` : c)).join('')}`;
+const KEEP_OUT = ['/engine', '/engine_modules', '/out/', '/.studio/', ...MEDIA.map(anyCase)].join('\n') + '\n';
 function keepOut(dir: string) {
   const git = path.join(dir, '.git');
   try { if (!fs.lstatSync(git).isDirectory()) return; } catch { return; }
@@ -101,6 +116,8 @@ export async function stageAll(dir: string, env?: Env) {
   await dropGitlinks(dir, env);
   await gitAsync(dir, ['add', '-A'], env);
   await dropGitlinks(dir, env);
+  const out = await keptOut(dir, env);
+  if (out.length) await gitAsync(dir, ['update-index', '--force-remove', '--', ...out], env);
 }
 export function stageAllSync(dir: string, env?: Env) {
   keepOut(dir);
@@ -109,4 +126,6 @@ export function stageAllSync(dir: string, env?: Env) {
   drop();
   gitSync(dir, ['add', '-A'], env);
   drop();
+  const out = keptOutSync(dir, env);
+  if (out.length) gitSync(dir, ['update-index', '--force-remove', '--', ...out], env);
 }
