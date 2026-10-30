@@ -10,7 +10,7 @@ import type { ChildCmd, ProjectFiles } from '@frametell/voice';
 import { FFMPEG } from '@frametell/engine/tools/bins.mjs';
 import { confine } from './tools/sandbox.js';
 import { gitAsync, gitSync, stageAll, stageAllSync } from './git.js';
-import { openProjectFile, readIn, writeIn, type OpenFile } from './projectfs.js';
+import { listIn, openProjectFile, readIn, writeIn, type OpenFile } from './projectfs.js';
 
 export interface Cue { i: number; at: number; abs: number; text: string }
 export interface PageTiming { id: string; start: number; end: number; speechEnd: number; cues: Cue[] }
@@ -100,6 +100,22 @@ export function gateResult(x: unknown): FilmGateResult {
   if (!ok) throw new Error('film gate: its answer has the wrong shape');
   return x as unknown as FilmGateResult;
 }
+
+/**
+ * The name of the film as it is now (its script, voice and pages), which its live frames carry: any change gives new
+ * names, so old frames are never shown. By content, not by time of change: a film copied into a box and back (times
+ * kept to a different precision) is still the same film, and its frames are not drawn again. Read through projectfs.
+ */
+export function liveStamp(dir: string): string {
+  const files = ['script.js', 'voice.js', ...listIn(dir, 'pages').map((f) => `pages/${f}`)];
+  const h = createHash('sha1');
+  for (const f of files) {
+    let body: Buffer | undefined;
+    try { body = readIn(dir, f); } catch { /* not there, or not a plain file of the project */ }
+    h.update(`${f}:${body ? createHash('sha1').update(body).digest('hex') : '-'}|`);
+  }
+  return h.digest('hex').slice(0, 10);
+}
 /** run an engine tool and collect its output. Never synchronously: lint and snapshots drive Chrome for seconds, and in the
  *  desktop app this process is also the one answering the panel (ten pages checking themselves froze every click).
  *  A stop kills it at once and rejects with an AbortError: Pause used to wait for every screenshot in flight to end on
@@ -177,9 +193,7 @@ export class Project {
         return out;
       } finally { fs.closeSync(film.fd); }
     }
-    // the film as it is now: its script, voice and pages; any change gives new names, so old frames are never shown
-    const files = ['script.js', 'voice.js', ...fs.readdirSync(this.file('pages')).map((f) => `pages/${f}`)];
-    const stamp = createHash('sha1').update(files.map((f) => { try { return `${f}:${fs.statSync(this.file(f)).mtimeMs}`; } catch { return f; } }).join('|')).digest('hex').slice(0, 10);
+    const stamp = liveStamp(this.dir);
     const rel = (t: number) => `out/frames/live-${stamp}-${Math.round(t * 10)}.jpg`;
     const todo = [...new Set(ts.filter((t) => !fs.existsSync(path.join(this.dir, rel(t)))))];
     if (todo.length) {

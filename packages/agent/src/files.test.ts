@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileTools } from './tools/files.js';
-import { Project } from './project.js';
+import { liveStamp, Project } from './project.js';
 import { imagesIn, listIn, readIn, writeIn } from './projectfs.js';
 
 function setup() {
@@ -170,6 +170,24 @@ test('posters and stills are cut only from a film of the project\'s own, through
     await assert.rejects(project.stills([2], path.join(s.root, 'out', 'own.mp4')));
     assert.equal(fs.readFileSync(path.join(s.api, 'server.js'), 'utf8'), 'api code');
   } finally { s.done(); }
+});
+
+test('the live frames\' name follows what the film says, not when its files were touched', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'stamp-'));
+  try {
+    fs.mkdirSync(path.join(root, 'pages'));
+    fs.writeFileSync(path.join(root, 'script.js'), 's');
+    fs.writeFileSync(path.join(root, 'pages', 'p01.js'), 'a');
+    const first = liveStamp(root);
+    // copied into a box and back: the same bytes at another time
+    fs.utimesSync(path.join(root, 'pages', 'p01.js'), new Date(1e12 + 0.4), new Date(1e12 + 0.4));
+    assert.equal(liveStamp(root), first);
+    fs.writeFileSync(path.join(root, 'pages', 'p01.js'), 'b');
+    assert.notEqual(liveStamp(root), first);
+    fs.writeFileSync(path.join(root, 'pages', 'p01.js'), 'a');
+    fs.writeFileSync(path.join(root, 'pages', 'p02.js'), 'c');
+    assert.notEqual(liveStamp(root), first);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test('a folder of the project is listed only when it really is one, never through a link', () => {
