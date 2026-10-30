@@ -172,3 +172,20 @@ test('media committed before they were kept out leave the index at the next comm
     assert.equal(await new Project(dir).commit('again'), null);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a host that keeps versions itself (FRAMETELL_HISTORY=off): no git in the project, and a step is still a commit to the director', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-nohistory-'));
+  const was = process.env.FRAMETELL_HISTORY;
+  process.env.FRAMETELL_HISTORY = 'off';
+  try {
+    fs.writeFileSync(path.join(dir, 'script.js'), 'const SCRIPT = {};');
+    const p = new Project(dir);
+    p.initHistory();
+    const id = await p.commit('Storyboard');
+    assert.match(id ?? '', /^step-/);
+    assert.ok(!fs.existsSync(path.join(dir, '.git')));
+  } finally {
+    if (was === undefined) delete process.env.FRAMETELL_HISTORY; else process.env.FRAMETELL_HISTORY = was;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

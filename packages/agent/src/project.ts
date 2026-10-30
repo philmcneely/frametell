@@ -106,6 +106,8 @@ export function gateResult(x: unknown): FilmGateResult {
  * names, so old frames are never shown. By content, not by time of change: a film copied into a box and back (times
  * kept to a different precision) is still the same film, and its frames are not drawn again. Read through projectfs.
  */
+/** the host keeps the film's versions itself: no git in the project (Project.commit) */
+const noHistory = () => process.env.FRAMETELL_HISTORY === 'off';
 export function liveStamp(dir: string): string {
   const files = ['script.js', 'voice.js', ...listIn(dir, 'pages').map((f) => `pages/${f}`)];
   const h = createHash('sha1');
@@ -315,22 +317,26 @@ export class Project {
   }
 
   // ── history: every change the agent makes is a commit, so any step can be undone (git revert) ──
+  // A host that keeps a film's versions itself (Frametell Cloud: FRAMETELL_HISTORY=off) has no git here: a step is
+  // still a commit to the director (its event says the step was finished), but nothing is written
   private git(args: string[]) { return gitSync(this.dir, args, childEnv()); }
   private gitAsync(args: string[]) { return gitAsync(this.dir, args, childEnv()); }
   /** an empty history: the repository and its author, nothing committed */
   initRepo() {
-    if (fs.existsSync(this.file('.git'))) return;
+    if (noHistory() || fs.existsSync(this.file('.git'))) return;
     this.git(['init', '-q', '-b', 'main']);
     this.git(['config', 'user.name', 'Frametell']);
     this.git(['config', 'user.email', 'studio@frametell.local']);
   }
   initHistory() {
+    if (noHistory()) return;
     this.initRepo();
     this.commitSync('Project created');
   }
   /** Commit everything that changed; returns the commit id, or null when nothing changed. The repository is made first
    *  when there is none, so a shell can never make .git itself first (with a config of its own) */
   async commit(message: string): Promise<string | null> {
+    if (noHistory()) return `step-${Date.now().toString(36)}`;
     this.initRepo();
     await stageAll(this.dir, childEnv());
     const r = await this.gitAsync(['commit', '-q', '-m', message]);
