@@ -42,6 +42,11 @@ export function cleanRefs(refs: unknown): UserRef[] {
     if (x.kind === 'page') return typeof x.page === 'string';
     if (x.kind === 'line') return typeof x.page === 'string' && typeof x.text === 'string' && Number.isFinite(x.at);
     if (x.kind === 'frame') return typeof x.page === 'string' && typeof x.path === 'string' && safe(x.path) && Number.isFinite(x.at);
+    if (x.kind === 'thing') {
+      const b = x.box as Record<string, unknown> | undefined;
+      return typeof x.page === 'string' && Number.isFinite(x.at) && !!b && ['x', 'y', 'w', 'h'].every((k) => Number.isFinite(b[k]))
+        && (x.fp === undefined || (typeof x.fp === 'string' && x.fp.length <= 200)) && (x.path === undefined || (typeof x.path === 'string' && safe(x.path)));
+    }
     if (x.kind === 'file') {
       if (typeof x.path !== 'string' || !safe(x.path)) return false;
       if (x.asset === undefined) return true;
@@ -62,6 +67,13 @@ export function withRefs(text: string, refs: UserRef[], assets: UserAsset[] = []
     if (r.kind === 'page') return `<page id="${esc(r.page)}" file="pages/${esc(r.page)}.js">${esc(r.label)}</page>`;
     if (r.kind === 'line') return `<line page="${esc(r.page)}" at="${mmss(r.at)}">${esc(r.text)}</line>`;
     if (r.kind === 'voice') return '';
+    if (r.kind === 'thing') {
+      // its call, its code's words and which of those (the engine's fp: "text|summer|0"), said as the director reads it
+      const [call, words, k] = (r.fp ?? '').split('|');
+      const drawn = r.fp ? ` drawn-by="P.${esc(call)}${words ? `(“${esc(words)}”…)` : ''}${Number(k) > 0 ? `, number ${Number(k) + 1} of those calls` : ''}"` : '';
+      const box = `${Math.round(r.box.x)},${Math.round(r.box.y)} ${Math.round(r.box.w)}×${Math.round(r.box.h)}`;
+      return `<thing page="${esc(r.page)}" file="pages/${esc(r.page)}.js" at="${mmss(r.at)}" box="${box}"${drawn}${r.path ? ` image="${esc(r.path)}"` : ''}>${esc(r.label)}: what the user picked on the picture (box: x,y w×h in stage pixels)${r.path ? '; open the image with read' : ''}</thing>`;
+    }
     if (r.kind === 'frame') return `<frame page="${esc(r.page)}" at="${mmss(r.at)}" image="${esc(r.path)}">the film at this moment${r.text ? `, while the narration says “${esc(r.text)}”` : ''}; open the image with read</frame>`;
     if (r.asset) {
       const a = assets.find((x) => `${USER_ASSETS_DIR}/${x.file}` === r.path);

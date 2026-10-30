@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowUp, AudioLines, Clock, FileText, Film, ImagePlus, Layers, Loader2, Paperclip, Pencil, Plus, Quote, Sparkles, TriangleAlert, Upload, X } from 'lucide-react';
+import { ArrowUp, AudioLines, Clock, FileText, Film, ImagePlus, Layers, Loader2, MousePointerClick, Paperclip, Pencil, Plus, Quote, Sparkles, TriangleAlert, Upload, X } from 'lucide-react';
 import { client, hosted, type LibraryGroup, type ProjectView } from '../lib/client';
 import { refKey, toSend, type Ref } from '../lib/refs';
 import { openAssets } from '../lib/assets';
@@ -41,7 +41,7 @@ const writeQueue = (id: string, q: Queued[]) => { try { if (q.length) localStora
 const SETTLE_MS = 1500;
 
 /** a change about pages (a page, a line, a frame of one in the tray) or about the whole film, as a hosted service is told */
-const scopeOf = (refs: Ref[]): 'page' | 'film' => (refs.some((r) => r.kind === 'page' || r.kind === 'line' || r.kind === 'frame') ? 'page' : 'film');
+const scopeOf = (refs: Ref[]): 'page' | 'film' => (refs.some((r) => r.kind === 'page' || r.kind === 'line' || r.kind === 'frame' || r.kind === 'thing') ? 'page' : 'film');
 
 /** one queued message: its words (edited in place) and what it carries */
 function QueuedRow({ q, project, onSave, onRemove }: { q: Queued; project: ProjectView; onSave: (text: string) => void; onRemove: () => void }) {
@@ -81,8 +81,8 @@ export function RefChip({ r, project, onRemove, onOpen, pending, error, name, pr
   r?: Ref; project: ProjectView; onRemove?: () => void; onOpen?: () => void; pending?: boolean; error?: string; name?: string; preview?: string; ground?: Ground;
 }) {
   const { t } = useT();
-  const img = preview ?? (r?.thumb ? client.fileUrl(project, r.thumb) : r?.kind === 'frame' ? client.fileUrl(project, r.path) : r?.kind === 'file' && r.image ? client.fileUrl(project, r.path) : undefined);
-  const Icon = error ? TriangleAlert : r?.kind === 'page' ? Layers : r?.kind === 'line' ? Quote : r?.kind === 'frame' ? Film : r?.kind === 'voice' ? AudioLines : FileText;
+  const img = preview ?? (r?.thumb ? client.fileUrl(project, r.thumb) : r?.kind === 'frame' || (r?.kind === 'thing' && r.path) ? client.fileUrl(project, r.path!) : r?.kind === 'file' && r.image ? client.fileUrl(project, r.path) : undefined);
+  const Icon = error ? TriangleAlert : r?.kind === 'page' ? Layers : r?.kind === 'line' ? Quote : r?.kind === 'frame' ? Film : r?.kind === 'thing' ? MousePointerClick : r?.kind === 'voice' ? AudioLines : FileText;
   const label = r ? (r.kind === 'line' ? `${r.label}` : r.label) : name ?? '';
   const full = error ? t('conversation.composer.chipError', { name: name ?? '', error }) : r?.kind === 'line' ? t('conversation.composer.chipLine', { label: r.label, text: r.text }) : label;
   const Body = onOpen ? 'button' : 'span';

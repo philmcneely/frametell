@@ -30,6 +30,9 @@ export type UserRef =
   | { kind: 'page'; page: string; label: string }
   | { kind: 'line'; page: string; label: string; at: number; text: string }
   | { kind: 'frame'; page: string; label: string; at: number; path: string; text?: string }
+  /** a thing the user picked on the picture (in an editor): where it is at `at` (stage px), what draws it (`fp`, the
+   *  engine's: the page's builder call, the words its code gives it, which of those it is), the film then (`path`) */
+  | { kind: 'thing'; page: string; label: string; at: number; box: { x: number; y: number; w: number; h: number }; fp?: string; path?: string }
   /** `asset`: one of the user's pictures for the film (under assets/user/), to be placed in it rather than read */
   | { kind: 'file'; label: string; path: string; image: boolean; asset?: boolean }
   /** the narrator to use from now on: the server switches the film's voice and narrates it again, nothing is redrawn */

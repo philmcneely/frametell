@@ -59,3 +59,12 @@ test('a picture of the film\'s own is pointed at with its size and note, to be p
   // gone from the list meanwhile: still pointed at, by its label
   assert.match(withRefs('x', cleanRefs([ref])), /<asset path="assets\/user\/our-logo-0123456789.svg">Logo; the user wants this/);
 });
+
+test('a thing picked on the picture: where it is, what draws it, the film then; malformed ones are dropped', () => {
+  const thing = { kind: 'thing' as const, page: 'p03', label: 'summer', at: 36, box: { x: 626.4, y: 572, w: 160, h: 44 }, fp: 'text|summer|1', path: 'out/frames/live-1-360.jpg' };
+  const out = withRefs('让它从左边飞进来', cleanRefs([thing]));
+  assert.match(out, /<thing page="p03" file="pages\/p03\.js" at="0:36" box="626,572 160×44" drawn-by="P\.text\(“summer”…\), number 2 of those calls" image="out\/frames\/live-1-360\.jpg">summer: what the user picked/);
+  assert.match(out, /让它从左边飞进来$/);
+  assert.deepEqual(cleanRefs([{ ...thing, box: { x: 1, y: 2, w: 3 } }, { ...thing, path: '../x.jpg' }, { ...thing, fp: 7 }]), []);
+  assert.equal(cleanRefs([{ kind: 'thing', page: 'p01', label: 'box', at: 1, box: { x: 0, y: 0, w: 1, h: 1 } }]).length, 1, 'fp and image are optional');
+});

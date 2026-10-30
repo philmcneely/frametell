@@ -7,7 +7,7 @@ import type { UserRef } from './client';
 export type Ref = UserRef & { thumb?: string };
 
 export const refKey = (r: UserRef) =>
-  r.kind === 'page' ? `page:${r.page}` : r.kind === 'line' ? `line:${r.page}:${r.at}` : r.kind === 'frame' ? `frame:${r.path}` : r.kind === 'voice' ? 'voice' : `file:${r.path}`;
+  r.kind === 'page' ? `page:${r.page}` : r.kind === 'line' ? `line:${r.page}:${r.at}` : r.kind === 'frame' ? `frame:${r.path}` : r.kind === 'thing' ? `thing:${r.page}:${r.fp ?? r.label}` : r.kind === 'voice' ? 'voice' : `file:${r.path}`;
 
 export const offerRef = (r: Ref) => dispatchEvent(new CustomEvent<Ref>('studio:ref', { detail: r }));
 
