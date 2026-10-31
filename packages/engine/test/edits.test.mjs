@@ -114,3 +114,25 @@ test('edits: a thing drawn in another of the style\'s colours', async () => {
   assert.equal(after.colors[6], after.redRgb, 'the words');
   assert.deepEqual(after.items[1], before.items[1], 'in the same place');
 });
+
+test('edits: a thing shown later: every act it registers moves by the shift, the others stay', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'frametell-edits-'));
+  try {
+    createProject(dir, { title: 'Edits', lang: 'en' });
+    fs.writeFileSync(path.join(dir, 'pages/p01.js'), `ENGINE.visual('p01', (P) => {
+  P.text('one', { x: 100, y: 100, at: 0.5, mode: 'fade' }).hide(2);
+  P.title('two');
+});
+ENGINE.edits('p01', { 1: { fp: 'text|one|0', shift: 1.5 } });
+`);
+    const browser = await chromium.launch({ executablePath: findChrome() });
+    try {
+      const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
+      await page.goto('file://' + path.join(dir, 'index.html'));
+      await page.evaluate(() => window.__ready);
+      const acts = await page.evaluate(() => ENGINE.pages[0].sh.acts.map((a) => ({ item: a.item, at: a.at, out: a.out ?? null })));
+      assert.deepEqual(acts.filter((a) => a.item === 1).map((a) => [a.at, a.out]), [[2, 3.5]], 'shown at 0.5 + 1.5, gone at 2 + 1.5');
+      assert.ok(acts.filter((a) => a.item === 2).every((a) => a.at < 1.5), 'the title untouched');
+    } finally { await browser.close(); }
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

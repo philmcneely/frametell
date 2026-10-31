@@ -30,9 +30,11 @@
   // What a page draws is a list of things, each one call its code makes to the builder (P.text, P.box, a kit's card),
   // numbered 1, 2, 3… in the order the code makes them: the same every time the page is built. An editor names a thing
   // by that number, and what was done to it by hand is written after the page's code as ENGINE.edits('<page>', {…}):
-  //   { "<n>": { fp, dx, dy, scale, ox, oy, hidden, color, text: { "<j>": "words" } } }
+  //   { "<n>": { fp, dx, dy, scale, ox, oy, hidden, color, shift, text: { "<j>": "words" } } }
   // moved by dx/dy and scaled by `scale` about (ox, oy) (stage px), taken off the picture, drawn in another of the
-  // style's colours (its call's options' `color`), or its j-th words (its calls to P.text, from 0) shown as others. The page's code is never changed: the edits are laid over what it draws.
+  // style's colours (its call's options' `color`), shown `shift` seconds later (or earlier: every act it registers,
+  // and its going), or its j-th words (its calls to P.text, from 0) shown as others. Each act carries `item`, the
+  // number of the thing it draws. The page's code is never changed: the edits are laid over what it draws.
   // A thing is also known by what it is: `fp`, its call, the words its code gives it (its first string) and which of
   // the page's things with that call and those words it is ("text|+¼ day|2"). An edit with an fp goes to the thing
   // that has it wherever the code now draws it (a page changed later draws other things before it); one whose thing
@@ -76,11 +78,17 @@
           if (at >= 0) args[at] = { ...args[at], color: ed.color }; else args.push({ color: ed.color });
         }
         building.watch.takeRecords();
+        const acts0 = this.sh.acts.length;
         thing = { n, j: 0, ed };
         if (name === 'text') { const w = ed?.text?.[thing.j++]; if (typeof w === 'string') args[0] = w; }
         try { return f.apply(this, args); } finally {
           const added = building.watch.takeRecords().flatMap((r) => [...r.addedNodes]).filter((x) => x.nodeType === 1);
           thing = null;
+          const shift = num(ed?.shift, 0);
+          for (const a of this.sh.acts.slice(acts0)) {
+            a.item = n;
+            if (shift) { a.at = Math.max(0, a.at + shift); building.shifted.push([a, shift]); }
+          }
           place(added, n, ed, name, fp);
         }
       };
@@ -222,12 +230,14 @@
         const watch = new MutationObserver(() => {});
         watch.observe(root, { childList: true, subtree: true });
         const mine = Object.entries(edits[pg.id] ?? {});
-        building = { id: pg.id, n: 0, watch, seen: new Map(), claimed: new Set(),
+        building = { id: pg.id, n: 0, watch, seen: new Map(), claimed: new Set(), shifted: [],
           byFp: new Map(mine.filter(([, e]) => typeof e?.fp === 'string').map(([n, e]) => [e.fp, [n, e]])) };
         const b = building;
         try { if (loadErrors[pg.id]) throw loadErrors[pg.id]; if (fn) fn(B, pg); else B.title(pg.title); }
         catch (e) { cam.innerHTML = ''; hud.innerHTML = ''; obj.sh.acts.length = 0; obj.sh.ticks.length = 0; fail(obj, 'build', e); }
         finally {
+          // a moved act's going (P.x(…).hide(t), given after it) moves with it
+          for (const [a, d] of b.shifted) if (a.out != null) a.out = Math.max(a.at, a.out + d);
           PV.colorPage = undefined; building = null; thing = null; watch.disconnect();
           orphans[pg.id] = mine.filter(([n]) => !b.claimed.has(n)).map(([n]) => +n);
         }
