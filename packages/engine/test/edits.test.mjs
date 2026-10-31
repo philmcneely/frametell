@@ -49,7 +49,9 @@ async function built(edits, before) {
           .map((e) => e.textContent).join('').replace(/\s+/g, ' ').trim();
         const order = [...document.querySelectorAll('[data-page="p01"] .cam svg.ink > [data-item]')].map((e) => e.dataset.item);
         const fps = Object.fromEntries([...document.querySelectorAll('[data-page="p01"] [data-fp]')].map((e) => [e.dataset.item, e.dataset.fp]));
-        return { items: [1, 2, 3, 4, 5, 6, 7, 8].map(box), words: [1, 3, 4, 6].map(words), order, fps, orphans: ENGINE.orphans('p01'), errors };
+        const colors = Object.fromEntries([2, 6].map((n) => { const e = document.querySelector(`[data-page="p01"] [data-item="${n}"]`); return [n, n === 2 ? e.querySelector('path[stroke]:not([stroke="none"])')?.getAttribute('stroke') : getComputedStyle(e).color]; }));
+        const red = PV.col('red'), redRgb = (() => { const d = document.createElement('div'); d.style.color = red; document.body.append(d); const c = getComputedStyle(d).color; d.remove(); return c; })();
+        return { colors, red, redRgb, items: [1, 2, 3, 4, 5, 6, 7, 8].map(box), words: [1, 3, 4, 6].map(words), order, fps, orphans: ENGINE.orphans('p01'), errors };
       }, errors);
     } finally { await browser.close(); }
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
@@ -102,4 +104,13 @@ test('edits: an edit names its thing by what it is too, so it follows it when th
   assert.equal(same.items[6], null, 'the second box hidden');
   assert.equal(later.items[7], null, 'the second box hidden still, now the 8th thing');
   assert.ok(later.items[6], 'the thing now 7th is not hidden');
+});
+
+test('edits: a thing drawn in another of the style\'s colours', async () => {
+  const before = await built(null);
+  const after = await built({ 2: { fp: 'box||0', color: 'red' }, 6: { fp: 'text|42|0', color: 'red' } });
+  assert.notEqual(before.colors[2], after.red);
+  assert.equal(after.colors[2], after.red, 'the box\'s ink');
+  assert.equal(after.colors[6], after.redRgb, 'the words');
+  assert.deepEqual(after.items[1], before.items[1], 'in the same place');
 });

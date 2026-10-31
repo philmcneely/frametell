@@ -30,9 +30,9 @@
   // What a page draws is a list of things, each one call its code makes to the builder (P.text, P.box, a kit's card),
   // numbered 1, 2, 3… in the order the code makes them: the same every time the page is built. An editor names a thing
   // by that number, and what was done to it by hand is written after the page's code as ENGINE.edits('<page>', {…}):
-  //   { "<n>": { fp, dx, dy, scale, ox, oy, hidden, text: { "<j>": "words" } } }
-  // moved by dx/dy and scaled by `scale` about (ox, oy) (stage px), taken off the picture, or its j-th words (its
-  // calls to P.text, from 0) shown as others. The page's code is never changed: the edits are laid over what it draws.
+  //   { "<n>": { fp, dx, dy, scale, ox, oy, hidden, color, text: { "<j>": "words" } } }
+  // moved by dx/dy and scaled by `scale` about (ox, oy) (stage px), taken off the picture, drawn in another of the
+  // style's colours (its call's options' `color`), or its j-th words (its calls to P.text, from 0) shown as others. The page's code is never changed: the edits are laid over what it draws.
   // A thing is also known by what it is: `fp`, its call, the words its code gives it (its first string) and which of
   // the page's things with that call and those words it is ("text|+¼ day|2"). An edit with an fp goes to the thing
   // that has it wherever the code now draws it (a page changed later draws other things before it); one whose thing
@@ -70,6 +70,11 @@
         const byFp = building.byFp.get(fp), plain = edits[building.id]?.[n];
         const ed = byFp ? byFp[1] : plain && !plain.fp ? plain : undefined;
         if (byFp) building.claimed.add(byFp[0]); else if (ed) building.claimed.add(String(n));
+        // its colour: the options (the last plain object it is given, or one given it) with another `color`
+        if (typeof ed?.color === 'string' && /^[\w#-]{1,40}$/.test(ed.color)) {
+          const at = args.findLastIndex((a) => a && typeof a === 'object' && Object.getPrototypeOf(a) === Object.prototype);
+          if (at >= 0) args[at] = { ...args[at], color: ed.color }; else args.push({ color: ed.color });
+        }
         building.watch.takeRecords();
         thing = { n, j: 0, ed };
         if (name === 'text') { const w = ed?.text?.[thing.j++]; if (typeof w === 'string') args[0] = w; }
