@@ -68,3 +68,10 @@ test('a thing picked on the picture: where it is, what draws it, the film then; 
   assert.deepEqual(cleanRefs([{ ...thing, box: { x: 1, y: 2, w: 3 } }, { ...thing, path: '../x.jpg' }, { ...thing, fp: 7 }]), []);
   assert.equal(cleanRefs([{ kind: 'thing', page: 'p01', label: 'box', at: 1, box: { x: 0, y: 0, w: 1, h: 1 } }]).length, 1, 'fp and image are optional');
 });
+
+test('lines changed by hand: a revoice reference is kept for the runner and never shown to the director', () => {
+  const refs = cleanRefs([{ kind: 'revoice', label: '重新配音' }]);
+  assert.equal(refs.length, 1);
+  assert.equal(withRefs('', refs), '');
+  assert.equal(withRefs('再快一点', refs), '再快一点');
+});

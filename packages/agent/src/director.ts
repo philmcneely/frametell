@@ -1181,15 +1181,16 @@ export class Director {
   }
 
   /**
-   * The film's narration spoken again in its (new) voice. Pages keep their pictures: they follow the lines' times,
-   * which the new takes give them. Takes are cached by voice, so going back to a voice used before costs nothing.
+   * The film's narration spoken again in its (new) voice, or (`lines`) because its lines were changed by hand. Pages
+   * keep their pictures: they follow the lines' times, which the new takes give them. Takes are cached by text and
+   * voice, so only pages whose lines changed are spoken again, and going back to a voice used before costs nothing.
    */
-  async revoice() {
-    if (!this.voiceStale()) return;
+  async revoice(lines = false) {
+    if (!lines && !this.voiceStale()) return;
     this.emit({ type: 'stage', stage: 'narrate', status: 'start' });
     this.serverMeta();
     const r = await narrate(this.o.dir, { tts: this.o.tts!, voice: this.o.voice, signal: this.o.signal, child: childCmd, files: projectFiles, onProgress: (e) => this.emit({ type: 'narrate', ...e }) });
-    await this.commit(this.say('换配音', 'New voice'));
+    await this.commit(lines ? this.say('改了台词，重新配音', 'Lines changed, narrated again') : this.say('换配音', 'New voice'));
     this.state.exported = false; this.save();
     this.emit({ type: 'stage', stage: 'narrate', status: 'done', detail: `${r.duration.toFixed(1)}s${r.warnings.length ? '；' + r.warnings.join('；') : ''}` });
     if (this.state.stage === 'done') this.emit({ type: 'ready', duration: (await this.project.timeline()).duration });

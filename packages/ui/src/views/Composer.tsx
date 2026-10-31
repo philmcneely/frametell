@@ -82,7 +82,7 @@ export function RefChip({ r, project, onRemove, onOpen, pending, error, name, pr
 }) {
   const { t } = useT();
   const img = preview ?? (r?.thumb ? client.fileUrl(project, r.thumb) : r?.kind === 'frame' || (r?.kind === 'thing' && r.path) ? client.fileUrl(project, r.path!) : r?.kind === 'file' && r.image ? client.fileUrl(project, r.path) : undefined);
-  const Icon = error ? TriangleAlert : r?.kind === 'page' ? Layers : r?.kind === 'line' ? Quote : r?.kind === 'frame' ? Film : r?.kind === 'thing' ? MousePointerClick : r?.kind === 'voice' ? AudioLines : FileText;
+  const Icon = error ? TriangleAlert : r?.kind === 'page' ? Layers : r?.kind === 'line' ? Quote : r?.kind === 'frame' ? Film : r?.kind === 'thing' ? MousePointerClick : r?.kind === 'voice' || r?.kind === 'revoice' ? AudioLines : FileText;
   const label = r ? (r.kind === 'line' ? `${r.label}` : r.label) : name ?? '';
   const full = error ? t('conversation.composer.chipError', { name: name ?? '', error }) : r?.kind === 'line' ? t('conversation.composer.chipLine', { label: r.label, text: r.text }) : label;
   const Body = onOpen ? 'button' : 'span';

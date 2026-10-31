@@ -245,6 +245,8 @@ class Runner {
   private afterExport: string[] = [];
   /** the voice was switched while a task ran: narrate the film again once it ends */
   private revoiceAfter = false;
+  /** lines changed by hand while a run works: narrated again once its task is done */
+  private relinesAfter = false;
   status: RunStatus = 'idle';
   private log: string;
   /** the language of the user's latest message, which the director answers in */
@@ -512,9 +514,9 @@ class Runner {
     for (const n of this.parked.splice(0)) director.message(n);
     // what waited for this task: a voice switched meanwhile (narrated again first), then changes asked during an export
     const next = () => {
-      const w = o.exporting ? this.afterExport.splice(0) : [], revoice = this.revoiceAfter;
-      this.revoiceAfter = false;
-      if (revoice || w.length) void this.launch((d) => (revoice ? d.revoice() : Promise.resolve()).then(() => (w.length ? d.revise(w.join('\n')) : undefined)));
+      const w = o.exporting ? this.afterExport.splice(0) : [], revoice = this.revoiceAfter, lines = this.relinesAfter;
+      this.revoiceAfter = false; this.relinesAfter = false;
+      if (revoice || lines || w.length) void this.launch((d) => (revoice || lines ? d.revoice(lines) : Promise.resolve()).then(() => (w.length ? d.revise(w.join('\n')) : undefined)));
     };
     task(director).finally(() => { release(); this.director = undefined; this.exporting = false; })
       .then(() => { this.status = 'done'; writeMeta(this.dir, readMetaAt(this.dir)); next(); })
@@ -603,6 +605,10 @@ class Runner {
       const rest = !!said || refs.some((r) => r.kind !== 'voice');
       if (this.switchVoice(voice, rest ? text : undefined) || !rest) return true;
     }
+    if (refs.some((r) => r.kind === 'revoice')) {
+      const rest = !!said || refs.some((r) => r.kind !== 'revoice' && r.kind !== 'voice');
+      if (this.relines(rest ? text : undefined) || !rest) return true;
+    }
     if (this.gate || this.status === 'awaiting_approval') return this.approve(text, { said: true });
     if (this.status === 'running' && this.exporting) {
       this.afterExport.push(text);
@@ -633,6 +639,26 @@ class Runner {
     const r = await d.route(text, credits).catch((): MessageRoute => ({ kind: 'change' }));
     if (r.kind === 'change' || r.kind === 'both') d.message(text);
     this.emit({ type: 'note', text: r.reply ?? this.tr('收到，接下来的步骤会照这个来', 'Got it. The next steps will follow this.') });
+  }
+
+  /**
+   * The film's lines, changed by hand (an editor wrote script.js): spoken again, only the pages whose lines changed,
+   * nothing redrawn; now on a finished film, after the current task while one runs. Returns true when it also took
+   * care of `then`, the rest of the message.
+   */
+  private relines(then?: string): boolean {
+    if (this.director) {
+      this.relinesAfter = true;
+      this.emit({ type: 'note', text: this.tr('台词改好了，这一步做完就重新配音', 'Lines changed. They’ll be narrated again once this step is done.') });
+      return false;
+    }
+    if (this.status === 'done' || this.stateStage() === 'done') {
+      this.emit({ type: 'note', text: this.tr('台词改好了，把改过的页重新配音，画面不用重画', 'Lines changed: narrating those pages again; the pictures stay as they are.') });
+      void this.launch((d) => d.revoice(true).then(() => (then ? d.revise(then) : undefined)));
+      return true;
+    }
+    this.emit({ type: 'note', text: this.tr('台词改好了，继续制作时会用新台词配音', 'Lines changed. The narration will use them when work resumes.') });
+    return false;
   }
 
   /**

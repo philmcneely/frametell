@@ -53,6 +53,7 @@ export function cleanRefs(refs: unknown): UserRef[] {
       // one of the film's own pictures: a file right in assets/user/
       return x.asset === false || (x.asset === true && path.posix.dirname(x.path) === USER_ASSETS_DIR);
     }
+    if (x.kind === 'revoice') return true;
     if (x.kind === 'voice') return (x.provider === 'volcengine' || x.provider === 'elevenlabs') && typeof x.id === 'string' && /^[\w.-]{1,120}$/.test(x.id) && typeof x.name === 'string';
     return false;
   });
@@ -61,12 +62,12 @@ export function cleanRefs(refs: unknown): UserRef[] {
 /** the message as the director reads it: the references first, then what the user wrote. `assets`: the film's pictures
  *  as its list is now, for a picture's size and note */
 export function withRefs(text: string, refs: UserRef[], assets: UserAsset[] = []): string {
-  refs = refs.filter((r) => r.kind !== 'voice');   // the server switches the voice itself; the director needs no word of it
+  refs = refs.filter((r) => r.kind !== 'voice' && r.kind !== 'revoice');   // the server narrates itself; the director needs no word of it
   if (!refs.length) return text;
   const lines = refs.map((r) => {
     if (r.kind === 'page') return `<page id="${esc(r.page)}" file="pages/${esc(r.page)}.js">${esc(r.label)}</page>`;
     if (r.kind === 'line') return `<line page="${esc(r.page)}" at="${mmss(r.at)}">${esc(r.text)}</line>`;
-    if (r.kind === 'voice') return '';
+    if (r.kind === 'voice' || r.kind === 'revoice') return '';
     if (r.kind === 'thing') {
       // its call, its code's words and which of those (the engine's fp: "text|summer|0"), said as the director reads it
       const [call, words, k] = (r.fp ?? '').split('|');
